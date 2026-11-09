@@ -2,7 +2,7 @@
 
 Static Kanban UI for a private, Git-backed work queue.
 
-**Board:** https://gqgs.github.io/work-board/ (available after GitHub Pages is enabled)
+**Board:** https://gqgs.github.io/work-board/
 
 ## Public UI, private tasks
 
