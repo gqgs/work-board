@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://api.github.com; img-src 'self' data:; base-uri 'none'; form-action 'none'; object-src 'none'">
+  <title>Work — Shared queue</title>
+  <meta name="description" content="A minimal Git-backed Kanban board for work across projects.">
+  <link rel="stylesheet" href="./styles.css">
+  <script type="module" src="./app.mjs"></script>
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <div class="brand">
+        <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+        <div class="brand-copy"><strong>work<span class="brand-slash">/</span></strong><small>gqgs · shared queue</small></div>
+      </div>
+      <div class="top-actions">
+        <a href="https://github.com/gqgs/work" target="_blank" rel="noopener noreferrer" class="repo-link">Repository <span aria-hidden="true">↗</span></a>
+        <span class="connection-indicator" id="connection-indicator" role="status"><span class="connection-dot"></span><span id="connection-label">Not connected</span></span>
+        <button type="button" id="connect-btn" class="btn btn-secondary">Connect GitHub</button>
+        <button type="button" id="new-task-btn" class="btn btn-primary"><span aria-hidden="true">＋</span> New task</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="heading-area" aria-labelledby="page-title">
+        <div>
+          <span class="eyebrow">THE WORKBOARD <span class="eyebrow-rule"></span> ONE SOURCE OF TRUTH</span>
+          <h1 id="page-title">Keep the work moving<span class="period">.</span></h1>
+          <p>One queue across every project. Finish what's open before starting what's next.</p>
+        </div>
+        <div class="heading-meta"><span class="small-caps">REPOSITORY</span><strong>gqgs/work</strong><span>Every edit is a Git commit.</span></div>
+      </section>
+
+      <section class="pulse" aria-label="Work overview">
+        <div class="pulse-item">
+          <div class="pulse-top"><span>ACTIVE WORK</span><span class="pulse-symbol">↗</span></div>
+          <div class="pulse-value" id="active-count">—</div>
+          <p>Tasks currently in progress</p>
+        </div>
+        <div class="pulse-item" id="review-metric">
+          <div class="pulse-top"><span>REVIEW QUEUE</span><span class="pulse-symbol">◎</span></div>
+          <div class="pulse-value"><span id="review-count">—</span><span class="limit"> / 3</span></div>
+          <p>Tracked linked PRs awaiting review</p>
+        </div>
+        <div class="pulse-item">
+          <div class="pulse-top"><span>COMPLETED</span><span class="pulse-symbol">✓</span></div>
+          <div class="pulse-value" id="done-count">—</div>
+          <p>Tasks finished, not just started</p>
+        </div>
+        <div class="pulse-item pulse-principle">
+          <div class="pulse-top"><span>WORKING PRINCIPLE</span><span class="pulse-symbol">✳</span></div>
+          <p class="principle-quote">Interesting and solvable <em>doesn't</em> mean worth doing.</p>
+        </div>
+      </section>
+
+      <section class="workspace" aria-label="Task management">
+        <div class="section-heading">
+          <div class="section-title"><h2>Board</h2><span id="total-count" class="task-total">0 tasks</span></div>
+          <div class="toolbar">
+            <label class="search-box"><span aria-hidden="true">⌕</span><input id="search-input" type="search" placeholder="Find a task…" aria-label="Search tasks" autocomplete="off"></label>
+            <label class="filter-wrap"><span>Project</span><select id="project-filter" aria-label="Filter by project"><option value="">All projects</option></select></label>
+            <label class="parked-toggle"><input id="show-parked" type="checkbox"><span>Show parked</span></label>
+            <button type="button" class="icon-button" id="refresh-btn" aria-label="Reload tasks from GitHub" title="Reload tasks">↻</button>
+          </div>
+        </div>
+        <p id="notice" class="notice" role="status">Loading workboard…</p>
+        <div id="board" class="board" aria-label="Kanban columns"></div>
+      </section>
+      <footer class="footer"><span>Source of truth: <code>tasks/*.md</code></span><span>Direct commits · No database · No background synchronization</span></footer>
+    </main>
+  </div>
+
+  <dialog id="auth-dialog" class="modal auth-modal" aria-labelledby="auth-title">
+    <div class="dialog-heading"><div><span class="eyebrow">GITHUB ACCESS</span><h2 id="auth-title">Connect your repository</h2></div><button class="close-dialog" type="button" data-close="auth-dialog" aria-label="Close">×</button></div>
+    <p>Because <code>gqgs/work</code> is private, GitHub needs a token to read and update tasks. Create a <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener noreferrer">fine-grained token ↗</a> limited to this repository with <strong>Contents: Read and write</strong>.</p>
+    <form id="auth-form" method="dialog">
+      <label class="form-field"><span>GitHub access token</span><input id="token-input" type="password" spellcheck="false" autocomplete="off" placeholder="github_pat_…" required></label>
+      <p class="privacy-note">Only held in this tab's memory. Never saved to disk, localStorage or the repository. Discarded on refresh or disconnect.</p>
+      <p class="form-error" id="auth-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="btn btn-secondary" data-close="auth-dialog">Cancel</button><button type="submit" class="btn btn-primary" id="auth-submit">Connect</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="task-dialog" class="modal task-modal" aria-labelledby="task-dialog-title">
+    <div class="dialog-heading"><div><span class="eyebrow" id="task-dialog-eyebrow">NEW WORK ITEM</span><h2 id="task-dialog-title">Create task</h2></div><button class="close-dialog" type="button" data-close="task-dialog" aria-label="Close">×</button></div>
+    <form id="task-form">
+      <label class="form-field"><span>Title <em>required</em></span><input name="title" maxlength="180" placeholder="What needs to happen?" required></label>
+      <div class="form-grid">
+        <label class="form-field"><span>Project <em>required</em></span><input name="project" list="project-suggestions" maxlength="80" placeholder="e.g. my-project" required><datalist id="project-suggestions"></datalist></label>
+        <label class="form-field"><span>Priority</span><select name="priority"><option value="P0">P0 · Urgent</option><option value="P1" selected>P1 · Next</option><option value="P2">P2 · Later</option></select></label>
+      </div>
+      <div class="form-grid">
+        <label class="form-field"><span>Status</span><select name="status"><option value="backlog">Backlog</option><option value="active">Active</option><option value="review">Review</option><option value="done">Done</option><option value="parked">Parked</option></select></label>
+        <label class="form-field"><span>Related GitHub issue / PR</span><input name="url" type="url" placeholder="https://github.com/…"></label>
+      </div>
+      <label class="form-field"><span>Description <em>Markdown</em></span><textarea name="description" rows="5" placeholder="What does done look like? What happens if we never do this?"></textarea></label>
+      <p class="form-error" id="task-error" role="alert"></p>
+      <div class="dialog-actions"><span id="commit-hint" class="commit-hint">Saving will create a commit on main.</span><button type="button" class="btn btn-secondary" data-close="task-dialog">Cancel</button><button type="submit" class="btn btn-primary" id="task-submit">Create task</button></div>
+    </form>
+  </dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>
