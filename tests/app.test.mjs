@@ -30,7 +30,12 @@ function setup(fetch) {
     if (!elements.has(id)) elements.set(id, {
       id, value: "", textContent: "", disabled: false, open: true,
       listeners: {}, dataset: {},
-      classList: { toggle() {}, add() {}, remove() {} },
+      classList: {
+        values: new Set(),
+        toggle(name, force) { if (force) this.values.add(name); else this.values.delete(name); },
+        add(name) { this.values.add(name); }, remove(name) { this.values.delete(name); },
+        contains(name) { return this.values.has(name); }
+      },
       addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
       fire(type, properties = {}) {
         const event = { target: this, defaultPrevented: false,
@@ -50,7 +55,7 @@ function setup(fetch) {
   const context = vm.createContext({
     ...model, fetch, AbortController, TextEncoder, TextDecoder, atob, btoa,
     setTimeout: () => 0, clearTimeout() {},
-    document: { getElementById: element, querySelectorAll: selector => {
+    document: { getElementById: element, querySelector: element, querySelectorAll: selector => {
       if (selector === "dialog") return [element("auth-dialog"), element("task-dialog")];
       if (selector === "[data-close]") return [authCancel, taskCancel];
       if (selector === '[data-close="task-dialog"]') return [taskCancel];
@@ -59,13 +64,100 @@ function setup(fetch) {
     } }
   });
   vm.runInContext(source + `
-    render = () => {};
+    render = renderStats;
     renderConnection = () => {};
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
-      closeDialog, openTask, disconnect, describeError, init };
+      closeDialog, openTask, disconnect, describeError, renderStats, init };
   `, context);
   return { ...context.app, element };
 }
+
+test("the initial shell says work and hides the review limit before JavaScript loads", async () => {
+  const html = await readFile(new URL("../docs/index.html", import.meta.url), "utf8");
+  assert.match(html, /class="brand-copy"><strong>work<\/strong>/);
+  assert.doesNotMatch(html, /brand-slash/);
+  assert.match(html, /<span id="review-limit"[^>]*\bhidden\b[^>]*> \/ 3<\/span>/);
+});
+
+test("locked and unauthenticated loaded states do not expose review counts or the limit", () => {
+  const app = setup(async () => response({ tree: [] }));
+  for (const loaded of [false, true]) {
+    app.state.loaded = loaded;
+    app.state.tasks = Array.from({ length: 3 }, (_, i) => ({
+      ...task, id: "t-example-" + i, status: "review", url: "https://github.com/example/repo/pull/" + (i + 1)
+    }));
+    app.renderStats();
+    assert.equal(app.element("review-count").textContent, "—");
+    assert.equal(app.element("review-limit").hidden, true);
+    assert.equal(app.element("review-metric").classList.contains("over-limit"), false);
+  }
+});
+
+test("review counts remain hidden until all authenticated task loading completes", async () => {
+  const pending = deferred();
+  const reviewTask = { ...task, status: "review", url: "https://github.com/example/repo/pull/1" };
+  const app = setup(async url => url.includes("/trees/") ? response(tree) : pending.promise);
+  app.element("token-input").value = "fake-token";
+  const connecting = app.connect(event);
+  await new Promise(setImmediate);
+  assert.equal(app.state.loading, true);
+  assert.equal(app.element("review-count").textContent, "—");
+  assert.equal(app.element("review-limit").hidden, true);
+  pending.resolve(response(blob(reviewTask)));
+  await connecting;
+  assert.equal(app.element("review-count").textContent, "1");
+  assert.equal(app.element("review-limit").hidden, false);
+});
+
+test("an authenticated empty board shows zero and the limit after hydration", async () => {
+  const app = setup(async () => response({ tree: [] }));
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  assert.equal(app.element("review-count").textContent, "0");
+  assert.equal(app.element("review-limit").hidden, false);
+  assert.equal(app.element("review-metric").classList.contains("over-limit"), false);
+});
+
+test("refresh hides stale review counts and restores the loaded result", async () => {
+  const pending = deferred();
+  const app = setup(async () => pending.promise);
+  app.state.token = "fake-token";
+  app.state.loaded = true;
+  app.state.tasks = Array.from({ length: 3 }, (_, i) => ({
+    ...task, id: "t-example-" + i, status: "review", url: "https://github.com/example/repo/pull/" + (i + 1)
+  }));
+  app.renderStats();
+  assert.equal(app.element("review-count").textContent, "3");
+  assert.equal(app.element("review-limit").hidden, false);
+  assert.equal(app.element("review-metric").classList.contains("over-limit"), true);
+  const refresh = app.loadTasks();
+  assert.equal(app.element("review-count").textContent, "—");
+  assert.equal(app.element("review-limit").hidden, true);
+  assert.equal(app.element("review-metric").classList.contains("over-limit"), false);
+  pending.resolve(response({ tree: [] }));
+  await refresh;
+  assert.equal(app.element("review-count").textContent, "0");
+  assert.equal(app.element("review-limit").hidden, false);
+  app.disconnect();
+  assert.equal(app.element("review-count").textContent, "—");
+  assert.equal(app.element("review-limit").hidden, true);
+});
+
+test("failed or canceled authentication never reveals the review limit", async () => {
+  const failed = setup(async () => response({ message: "Bad credentials" }, 401));
+  failed.element("token-input").value = "fake-token";
+  await failed.connect(event);
+  assert.equal(failed.element("review-limit").hidden, true);
+  const pending = deferred();
+  const canceled = setup(async () => pending.promise);
+  canceled.element("token-input").value = "fake-token";
+  const connecting = canceled.connect(event);
+  canceled.cancelConnection();
+  pending.resolve(response({ tree: [] }));
+  await connecting;
+  assert.equal(canceled.element("review-count").textContent, "—");
+  assert.equal(canceled.element("review-limit").hidden, true);
+});
 
 test("connect publishes the token only after success and clears the input", async () => {
   const pending = deferred();
