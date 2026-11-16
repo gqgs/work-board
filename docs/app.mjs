@@ -147,18 +147,19 @@ function renderConnection() {
 }
 
 function renderStats() {
-  const loaded = state.loaded;
+  const loaded = state.loaded && !!state.token && !state.loading;
   const active = state.tasks.filter(task => task.status === "active").length;
   const done = state.tasks.filter(task => task.status === "done").length;
   const review = state.tasks.filter(isReviewPr).length;
   $("active-count").textContent = loaded ? String(active) : "—";
   $("done-count").textContent = loaded ? String(done) : "—";
   $("review-count").textContent = loaded ? String(review) : "—";
-  $("review-metric").classList.toggle("over-limit", review >= 3);
+  $("review-limit").hidden = !loaded;
+  $("review-metric").classList.toggle("over-limit", loaded && review >= 3);
   $("review-metric").title = "Counts only linked PR tasks in Review on this board, not every open GitHub PR.";
   $("total-count").textContent = loaded ? state.tasks.length + (state.tasks.length === 1 ? " task" : " tasks") : "— tasks";
   const parked = state.tasks.filter(task => task.status === "parked").length;
-  document.querySelector(".parked-toggle span").textContent = parked ? "Show parked (" + parked + ")" : "Show parked";
+  document.querySelector(".parked-toggle span").textContent = loaded && parked ? "Show parked (" + parked + ")" : "Show parked";
 }
 
 function renderProjects() {
@@ -314,6 +315,7 @@ function updateControls() {
   document.querySelectorAll("#task-form input, #task-form select, #task-form textarea").forEach(field => {
     field.disabled = state.saving;
   });
+  renderStats();
 }
 
 function taskPath(task) {
