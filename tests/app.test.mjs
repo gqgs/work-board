@@ -67,7 +67,8 @@ function setup(fetch) {
     render = renderStats;
     renderConnection = () => {};
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
-      closeDialog, openTask, disconnect, describeError, renderStats, init };
+      closeDialog, openTask, viewTask, renderTaskView, editViewedTask,
+      disconnect, describeError, renderStats, init };
   `, context);
   return { ...context.app, element };
 }
@@ -355,3 +356,54 @@ test("wired task Escape and backdrop events cannot dismiss an in-flight save", a
   assert.equal(app.element("task-dialog").open, false);
 });
 
+
+test("task cards open a readable detail view before explicit editing", () => {
+  const app = setup(async () => response({ tree: [] }));
+  app.state.tasks = [{ ...task, description: "## Details\n\n**All** the information, without textarea clipping." }];
+  const selected = app.state.tasks[0];
+  const editor = app.element("task-dialog");
+  const viewer = app.element("view-dialog");
+  editor.open = false;
+  viewer.open = false;
+
+  app.viewTask(selected);
+  assert.equal(viewer.open, true);
+  assert.equal(editor.open, false);
+  assert.equal(app.state.editing, null);
+  assert.equal(app.element("view-title").textContent, selected.title);
+  assert.equal(app.element("view-project").textContent, selected.project);
+  assert.match(app.element("view-description").innerHTML, /<h2>Details<\/h2>/);
+  assert.match(app.element("view-description").innerHTML, /<strong>All<\/strong>/);
+  assert.equal(app.element("view-edit-btn").hidden, true);
+
+  // Only the explicitly authorized Edit action should open a form.
+  app.editViewedTask();
+  assert.equal(editor.open, false);
+
+  app.state.token = "fake-token";
+  app.renderTaskView(selected);
+  assert.equal(app.element("view-edit-btn").hidden, false);
+  const form = app.element("task-form");
+  const fields = new Map(["title", "project", "priority", "status", "url", "description"]
+    .map(name => [name, { value: "", focus() {} }]));
+  form.elements = { namedItem: name => fields.get(name) };
+  app.editViewedTask();
+  assert.equal(viewer.open, false);
+  assert.equal(editor.open, true);
+  assert.equal(app.state.editing.id, selected.id);
+  assert.equal(fields.get("description").value, selected.description);
+  assert.equal(app.element("task-cancel-btn").textContent, "Back to details");
+});
+
+test("the detail view keeps long task text and related issue links intact", () => {
+  const app = setup(async () => response({ tree: [] }));
+  const description = Array.from({ length: 30 }, (_, i) => "Paragraph " + i).join("\n\n");
+  const selected = { ...task, description, url: "https://github.com/example/repo/pull/17" };
+  app.viewTask(selected);
+  const content = app.element("view-description").innerHTML;
+  assert.match(content, /Paragraph 0/);
+  assert.match(content, /Paragraph 29/);
+  assert.equal(app.element("view-related").hidden, false);
+  assert.equal(app.element("view-related-link").href, selected.url);
+  assert.equal(app.element("view-reference").textContent, selected.id);
+});

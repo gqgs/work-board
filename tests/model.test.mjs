@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { formatTask, parseTask, safeUrl, sortTasks, identicalTask, isReviewPr } from "../docs/model.mjs";
+import { formatTask, parseTask, safeUrl, sortTasks, identicalTask, isReviewPr, renderTaskMarkdown } from "../docs/model.mjs";
 
 const base = {
   id: "t-test123", title: 'Fix: "strange" 🌊', project: "example-project",
@@ -40,3 +40,51 @@ test("counts only linked PRs in review", () => {
   assert.equal(identicalTask(base, { ...base, status: "done" }), false);
 });
 
+
+test("read view renders long Markdown as paragraphs, headings, lists, and code", () => {
+  const html = renderTaskMarkdown([
+    "## Summary", "",
+    "This is **important** and *emphasized*.",
+    "",
+    "- First",
+    "- Second",
+    "",
+    "> A quoted observation", "",
+    "\x60\x60\x60js",
+    "const n = 3 < 4;",
+    "\x60\x60\x60"
+  ].join("\n"));
+  assert.match(html, /<h2>Summary<\/h2>/);
+  assert.match(html, /<strong>important<\/strong>/);
+  assert.match(html, /<em>emphasized<\/em>/);
+  assert.match(html, /<ul><li>First<\/li><li>Second<\/li><\/ul>/);
+  assert.match(html, /<blockquote><p>A quoted observation<\/p><\/blockquote>/);
+  assert.match(html, /<pre><code>const n = 3 &lt; 4;<\/code><\/pre>/);
+});
+
+test("read view supports Markdown and bare HTTPS links without permitting unsafe markup", () => {
+  const html = renderTaskMarkdown([
+    "[Open PR](https://github.com/example/repo/pull/7)",
+    "",
+    "See https://github.com/example/repo.",
+    "",
+    "[do not click](javascript:alert(1))",
+    "",
+    "<img src=x onerror=alert(1)>",
+    "",
+    "\x60*not italic*\x60"
+  ].join("\n"));
+  assert.match(html, /href="https:\/\/github.com\/example\/repo\/pull\/7"/);
+  assert.match(html, /href="https:\/\/github.com\/example\/repo"/);
+  assert.doesNotMatch(html, /href="javascript:/);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img/);
+  assert.match(html, /<code>\*not italic\*<\/code>/);
+});
+
+test("read view represents empty and unrecognized Markdown harmlessly", () => {
+  assert.equal(renderTaskMarkdown(""), "");
+  assert.equal(renderTaskMarkdown("Normal text."), "<p>Normal text.</p>");
+  assert.match(renderTaskMarkdown("- [x] Complete"), /Checked/);
+  assert.match(renderTaskMarkdown("- [ ] Pending"), /Unchecked/);
+});

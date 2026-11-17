@@ -85,6 +85,31 @@
     </form>
   </dialog>
 
+  <dialog id="view-dialog" class="modal view-modal" aria-labelledby="view-title">
+    <div class="dialog-heading">
+      <div><span class="eyebrow">WORK ITEM / DETAILS</span><h2 id="view-title"></h2></div>
+      <button class="close-dialog" type="button" data-close="view-dialog" aria-label="Close details">×</button>
+    </div>
+    <div class="view-meta" aria-label="Task metadata">
+      <div><span class="view-label">PROJECT</span><span class="view-value" id="view-project"></span></div>
+      <div><span class="view-label">STATUS</span><span class="view-value" id="view-status"></span></div>
+      <div><span class="view-label">PRIORITY</span><span class="view-value" id="view-priority"></span></div>
+    </div>
+    <section class="view-content" aria-labelledby="view-description-heading">
+      <h3 id="view-description-heading">Description</h3>
+      <div id="view-description" class="rendered-markdown"></div>
+    </section>
+    <div class="view-related" id="view-related" hidden>
+      <span class="view-label">RELATED GITHUB ISSUE / PR</span>
+      <a id="view-related-link" target="_blank" rel="noopener noreferrer"></a>
+    </div>
+    <div class="dialog-actions view-actions">
+      <span class="view-reference" id="view-reference"></span>
+      <button type="button" class="btn btn-secondary" data-close="view-dialog">Close</button>
+      <button type="button" id="view-edit-btn" class="btn btn-primary" hidden>Edit task</button>
+    </div>
+  </dialog>
+
   <dialog id="task-dialog" class="modal task-modal" aria-labelledby="task-dialog-title">
     <div class="dialog-heading"><div><span class="eyebrow" id="task-dialog-eyebrow">NEW WORK ITEM</span><h2 id="task-dialog-title">Create task</h2></div><button class="close-dialog" type="button" data-close="task-dialog" aria-label="Close">×</button></div>
     <form id="task-form">
@@ -99,7 +124,7 @@
       </div>
       <label class="form-field"><span>Description <em>Markdown</em></span><textarea name="description" rows="5" placeholder="What does done look like? What happens if we never do this?"></textarea></label>
       <p class="form-error" id="task-error" role="alert"></p>
-      <div class="dialog-actions"><span id="commit-hint" class="commit-hint">Saving will create a commit on main.</span><button type="button" class="btn btn-secondary" data-close="task-dialog">Cancel</button><button type="submit" class="btn btn-primary" id="task-submit">Create task</button></div>
+      <div class="dialog-actions"><span id="commit-hint" class="commit-hint">Saving will create a commit on main.</span><button type="button" id="task-cancel-btn" class="btn btn-secondary" data-close="task-dialog">Cancel</button><button type="submit" class="btn btn-primary" id="task-submit">Create task</button></div>
     </form>
   </dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>

@@ -91,3 +91,123 @@ export function identicalTask(a, b) {
   return [...FIELDS, "description"].every(key => String(a[key] ?? "") === String(b[key] ?? ""));
 }
 
+// A conservative Markdown subset for the read-only task view. All user-provided
+// markup is escaped first; links must be credential-free HTTPS URLs.
+function escapeMarkdownHtml(value) {
+  return String(value).replace(/[&<>"']/g, character => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  })[character]);
+}
+
+function taskInline(text) {
+  function decorate(value) {
+    return String(value).split(/(\x60[^\x60 \n][^\x60\n]*\x60)/g).map(part => {
+      if (part.startsWith("\x60") && part.endsWith("\x60") && part.length > 2) {
+        return "<code>" + escapeMarkdownHtml(part.slice(1, -1)) + "</code>";
+      }
+      return escapeMarkdownHtml(part)
+        .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/\*([^*\n]+)\*/g, "<em>$1</em>")
+        .replace(/~~([^~\n]+)~~/g, "<del>$1</del>");
+    }).join("");
+  }
+
+  const linkPattern = /\[([^\]\n]+)\]\(([^)\s]+)\)|(https:\/\/[^\s<>()]+)/g;
+  let result = "", cursor = 0, match;
+  while ((match = linkPattern.exec(text)) !== null) {
+    result += decorate(text.slice(cursor, match.index));
+    const label = match[1];
+    let address = match[2] || match[3];
+    let suffix = "";
+    if (!label) {
+      const trimmed = address.replace(/[.,;!?]+$/, "");
+      suffix = address.slice(trimmed.length);
+      address = trimmed;
+    }
+    try {
+      const url = safeUrl(address);
+      if (!url) throw new Error("Empty link");
+      result += '<a href="' + escapeMarkdownHtml(url) +
+        '" target="_blank" rel="noopener noreferrer">' +
+        decorate(label || address) + "</a>" + decorate(suffix);
+    } catch {
+      result += decorate(match[0]);
+    }
+    cursor = linkPattern.lastIndex;
+  }
+  return result + decorate(text.slice(cursor));
+}
+
+export function renderTaskMarkdown(source) {
+  const lines = String(source ?? "").replace(/\r\n?/g, "\n").split("\n");
+  const html = [], paragraph = [], quote = [];
+  let list = "", code = [], fenced = false;
+
+  function flushParagraph() {
+    if (paragraph.length) {
+      html.push("<p>" + taskInline(paragraph.join(" ")) + "</p>");
+      paragraph.length = 0;
+    }
+  }
+  function flushList() {
+    if (list) { html.push("</" + list + ">"); list = ""; }
+  }
+  function flushQuote() {
+    if (quote.length) {
+      html.push("<blockquote><p>" + taskInline(quote.join(" ")) + "</p></blockquote>");
+      quote.length = 0;
+    }
+  }
+  function flush() { flushParagraph(); flushList(); flushQuote(); }
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed.startsWith("\x60\x60\x60")) {
+      if (fenced) {
+        html.push("<pre><code>" + escapeMarkdownHtml(code.join("\n")) + "</code></pre>");
+        code = [];
+        fenced = false;
+      } else {
+        flush();
+        fenced = true;
+      }
+      continue;
+    }
+    if (fenced) { code.push(line); continue; }
+    if (!trimmed) { flush(); continue; }
+    const heading = /^(#{1,4})\s+(.+)$/.exec(trimmed);
+    if (heading) {
+      flush();
+      const level = Math.max(2, heading[1].length);
+      html.push("<h" + level + ">" + taskInline(heading[2]) + "</h" + level + ">");
+      continue;
+    }
+    if (/^---+$/.test(trimmed)) { flush(); html.push("<hr>"); continue; }
+    if (/^>\s?/.test(trimmed)) {
+      flushParagraph(); flushList();
+      quote.push(trimmed.replace(/^>\s?/, ""));
+      continue;
+    }
+    flushQuote();
+    const item = /^([-*]|\d+\.)\s+(.+)$/.exec(trimmed);
+    if (item) {
+      flushParagraph();
+      const type = /^\d/.test(item[1]) ? "ol" : "ul";
+      if (list !== type) { flushList(); list = type; html.push("<" + type + ">"); }
+      const checked = /^\[([ xX])\]\s+(.+)$/.exec(item[2]);
+      if (checked) {
+        const mark = checked[1].toLowerCase() === "x" ? "☑" : "☐";
+        html.push('<li><span aria-label="' + (mark === "☑" ? "Checked" : "Unchecked") +
+          '">' + mark + "</span> " + taskInline(checked[2]) + "</li>");
+      } else {
+        html.push("<li>" + taskInline(item[2]) + "</li>");
+      }
+      continue;
+    }
+    flushList();
+    paragraph.push(trimmed);
+  }
+  flush();
+  if (fenced) html.push("<pre><code>" + escapeMarkdownHtml(code.join("\n")) + "</code></pre>");
+  return html.join("\n");
+}
