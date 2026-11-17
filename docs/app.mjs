@@ -1,12 +1,12 @@
 import {
   COLUMNS, createTaskId, formatTask, identicalTask, isReviewPr,
-  parseTask, sortTasks, validateTask
+  parseTask, sortTasks, validateTask, renderTaskMarkdown
 } from "./model.mjs";
 
 const REPO = "gqgs/work";
 const BRANCH = "main";
 const ROOT = "https://api.github.com/repos/" + REPO;
-const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, dragging: null };
+const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, dragging: null };
 const $ = id => document.getElementById(id);
 const H = name => document.createElement(name);
 let toastTimeout;
@@ -180,7 +180,7 @@ function createCard(task) {
   card.tabIndex = 0;
   card.draggable = !!state.token;
   card.setAttribute("role", "button");
-  card.setAttribute("aria-label", "Edit " + task.title + ", " + task.status);
+  card.setAttribute("aria-label", "Read details for " + task.title + ", " + task.status);
   const top = node("div", "card-overline");
   const project = node("span", "project-pill", task.project);
   project.title = task.project;
@@ -190,23 +190,22 @@ function createCard(task) {
   if (task.description) card.append(node("p", "card-description", task.description));
   const footer = node("div", "card-footer");
   footer.append(node("span", "card-id", task.id.slice(-8)));
+  footer.append(node("span", "card-open", "Details →"));
   if (task.url) {
-    const link = node("a", "", "View issue / PR ↗");
+    const link = node("a", "", "PR ↗");
     link.href = task.url;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     link.addEventListener("click", event => event.stopPropagation());
     footer.append(link);
-  } else {
-    footer.append(node("span", "", "Open details →"));
   }
   card.append(footer);
-  card.addEventListener("click", () => openTask(task));
+  card.addEventListener("click", () => viewTask(task));
   card.addEventListener("keydown", event => {
     if (event.target !== card) return;
     if (event.key === "Enter" || event.key === " ") {
       event.preventDefault();
-      openTask(task);
+      viewTask(task);
     }
   });
   card.addEventListener("dragstart", event => {
@@ -288,6 +287,11 @@ function render() {
   renderStats();
   renderProjects();
   renderBoard();
+  if ($("view-dialog").open && state.viewing) {
+    const current = state.tasks.find(task => task.id === state.viewing);
+    if (current) renderTaskView(current);
+    else $("view-dialog").close();
+  }
 }
 
 function showToast(message, error = false) {
@@ -366,12 +370,46 @@ async function saveTask(nextInput, previous = null) {
   }
 }
 
+function renderTaskView(task) {
+  $("view-title").textContent = task.title;
+  $("view-project").textContent = task.project;
+  $("view-status").textContent = COLUMNS.find(column => column.id === task.status)?.label || task.status;
+  const priorities = { P0: "P0 · Urgent", P1: "P1 · Next", P2: "P2 · Later" };
+  $("view-priority").textContent = priorities[task.priority] || task.priority;
+  $("view-description").innerHTML = task.description
+    ? renderTaskMarkdown(task.description)
+    : '<p class="empty-description">No description provided.</p>';
+  $("view-related").hidden = !task.url;
+  $("view-related-link").href = task.url || "";
+  $("view-related-link").textContent = task.url || "";
+  $("view-reference").textContent = task.id;
+  $("view-edit-btn").hidden = !state.token;
+}
+
+function viewTask(task) {
+  if (state.saving) return;
+  state.viewing = task.id;
+  renderTaskView(task);
+  $("view-dialog").showModal();
+  $("view-dialog").scrollTop = 0;
+}
+
+function editViewedTask() {
+  if (!state.token || state.saving || !state.viewing) return;
+  const task = state.tasks.find(item => item.id === state.viewing);
+  if (!task) return;
+  $("view-dialog").close();
+  openTask(task);
+}
+
 function openTask(task = null) {
   if (state.saving) return;
   state.editing = task;
   $("task-dialog-eyebrow").textContent = task ? "EDIT WORK ITEM" : "NEW WORK ITEM";
   $("task-dialog-title").textContent = task ? "Edit task" : "Create task";
   $("task-submit").textContent = task ? "Save changes" : "Create task";
+  const cancel = document.querySelector('[data-close="task-dialog"]');
+  if (cancel) cancel.textContent = task ? "Back to details" : "Cancel";
   $("task-error").textContent = "";
   $("commit-hint").textContent = "Each change creates one commit on main.";
   const form = $("task-form");
@@ -393,6 +431,10 @@ async function submitTask(event) {
   try {
     const saved = await saveTask(input, previous);
     $("task-dialog").close();
+    if (previous) {
+      const current = state.tasks.find(task => task.id === previous.id) || previous;
+      viewTask(current);
+    }
     if (!saved) showToast("No changes to commit.");
   } catch (error) {
     $("task-error").textContent = describeError(error);
@@ -441,7 +483,10 @@ function cancelConnection() {
 function closeDialog(dialog) {
   if (dialog.id === "task-dialog" && state.saving) return;
   if (dialog.id === "auth-dialog") cancelConnection();
+  const previous = dialog.id === "task-dialog" && state.editing
+    ? state.tasks.find(task => task.id === state.editing.id) : null;
   dialog.close();
+  if (previous) viewTask(previous);
 }
 
 function disconnect() {
@@ -451,7 +496,9 @@ function disconnect() {
   state.tasks = [];
   state.loaded = false;
   state.editing = null;
+  state.viewing = null;
   state.dragging = null;
+  if ($("view-dialog").open) $("view-dialog").close();
   $("task-form").reset();
   render();
   notice("Disconnected. Token discarded from memory.");
@@ -461,6 +508,7 @@ function disconnect() {
 function init() {
   $("auth-form").addEventListener("submit", connect);
   $("task-form").addEventListener("submit", submitTask);
+  $("view-edit-btn").addEventListener("click", editViewedTask);
   $("connect-btn").addEventListener("click", () => {
     if (state.saving) return;
     if (state.token) {
@@ -490,7 +538,10 @@ function init() {
       if (event.target === dialog) closeDialog(dialog);
     });
     dialog.addEventListener("cancel", event => {
-      if (dialog.id === "task-dialog" && state.saving) event.preventDefault();
+      if (dialog.id === "task-dialog") {
+        event.preventDefault();
+        if (!state.saving) closeDialog(dialog);
+      }
       if (dialog.id === "auth-dialog") cancelConnection();
     });
   }
