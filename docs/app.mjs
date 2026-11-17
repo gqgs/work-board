@@ -408,8 +408,7 @@ function openTask(task = null) {
   $("task-dialog-eyebrow").textContent = task ? "EDIT WORK ITEM" : "NEW WORK ITEM";
   $("task-dialog-title").textContent = task ? "Edit task" : "Create task";
   $("task-submit").textContent = task ? "Save changes" : "Create task";
-  const cancel = document.querySelector('[data-close="task-dialog"]');
-  if (cancel) cancel.textContent = task ? "Back to details" : "Cancel";
+  $("task-cancel-btn").textContent = task ? "Back to details" : "Cancel";
   $("task-error").textContent = "";
   $("commit-hint").textContent = "Each change creates one commit on main.";
   const form = $("task-form");
