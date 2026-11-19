@@ -66,6 +66,14 @@ main { padding: 40px 52px 12px; }
 .section-title h2 { font-size: 20px; letter-spacing: -.025em; font-weight: 690; margin: 0; }
 .task-total { padding: 4px 8px; color: var(--muted); background: #1a2534; border: 1px solid var(--line); border-radius: 6px; font-size: 10px; }
 .toolbar { display: flex; gap: 10px; align-items: center; }
+.publishing-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 10px; }
+.publishing-help, #sync-status { color: var(--muted); font-size: 11px; line-height: 1.6; }
+.publishing-help { margin: 0 0 16px; max-width: 900px; }
+.publishing-badge { font-size: 11px; color: var(--accent); margin: 9px 0 3px; }
+.publishing-badge.overdue, .publishing-badge.invalid { color: var(--red); }
+.publishing-badge.ready, .publishing-badge.published { color: var(--green); }
+.publishing-badge.verify { color: var(--yellow); }
+.publishing-date { color: var(--muted); font-size: 10px; margin: 3px 0 10px; }
 .search-box, .filter-wrap { display: flex; align-items: center; background: #131c29; border: 1px solid var(--line); border-radius: 7px; height: 36px; }
 .search-box { min-width: 216px; gap: 8px; padding: 0 11px; color: var(--muted); }
 .search-box > span { font-size: 21px; }
@@ -178,4 +186,5 @@ select option { background: #141d2b; color: var(--text); }
 .view-related a { display: inline-block; margin-top: 8px; color: #a7caff; text-decoration: underline; text-underline-offset: 3px; font-size: 13px; overflow-wrap: anywhere; }
 .view-reference { margin-right: auto; color: #8494a9; font-size: 10px; overflow-wrap: anywhere; }
 .view-actions { margin-top: 18px; flex-wrap: wrap; }
+.board.publishing-view { display: grid; grid-template-columns: repeat(auto-fill,minmax(240px,1fr)); min-height: 0; overflow: visible; }
 @media (max-width: 600px) { .view-meta { grid-template-columns: 1fr 1fr; gap: 8px; } .view-meta > div { padding: 12px; } .view-modal .dialog-heading h2 { font-size: 24px; } .view-reference { width: 100%; } }

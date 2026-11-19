@@ -67,10 +67,22 @@
             <button type="button" class="icon-button" id="refresh-btn" aria-label="Reload tasks from GitHub" title="Reload tasks">↻</button>
           </div>
         </div>
+        <div class="publishing-toolbar" aria-label="Publishing controls">
+          <label class="filter-wrap"><span>View</span><select id="publishing-filter" aria-label="Publishing view">
+            <option value="">All work</option><option value="all">Publishing</option><option value="ready">Ready</option>
+            <option value="overdue">Overdue</option><option value="verify">Needs verification</option>
+            <option value="scheduled">Scheduled</option><option value="published">Published</option>
+            <option value="hold">On hold</option><option value="invalid">Check metadata</option>
+          </select></label>
+          <label class="filter-wrap"><span>Channel</span><select id="channel-filter" aria-label="Publishing channel"><option value="">All channels</option></select></label>
+          <button type="button" id="notifications-btn" class="btn btn-secondary" disabled>Enable tab alerts</button>
+          <span id="sync-status" role="status">Connect to check publishing dates.</span>
+        </div>
+        <p class="publishing-help">Alerts are optional and generic. They work only while this tab stays open and connected, may be delayed in the background, and stop on reload. Dates are shown in Brasília time. Ready does not authorize posting.</p>
         <p id="notice" class="notice" role="status">Loading workboard…</p>
         <div id="board" class="board" aria-label="Kanban columns"></div>
       </section>
-      <footer class="footer"><span>Source of truth: <code>tasks/*.md</code></span><span>Direct commits · No database · No background synchronization</span></footer>
+      <footer class="footer"><span>Source of truth: <code>tasks/*.md</code></span><span>Direct commits · No database · No closed-tab reminders</span></footer>
     </main>
   </div>
 
