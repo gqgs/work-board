@@ -194,3 +194,12 @@ select option { background: #141d2b; color: var(--text); }
 #test-alert-result:empty { display: none; }
 @media (max-width: 760px) { .board.publishing-view { grid-template-columns: minmax(0,1fr); margin-right: 0; padding-right: 0; } .publishing-column { min-width: 0; } }
 @media (max-width: 600px) { .view-meta { grid-template-columns: 1fr 1fr; gap: 8px; } .view-meta > div { padding: 12px; } .view-modal .dialog-heading h2 { font-size: 24px; } .view-reference { width: 100%; } }
+
+/* Separate native buttons avoid nesting interactive controls in a card button. */
+.card-footer { flex-wrap: wrap; }
+.card-details { border: 0; border-radius: 3px; padding: 4px 0; background: transparent; color: #b4c9ef; font: inherit; cursor: pointer; }
+.card-details:hover { text-decoration: underline; }
+.card-action { width: 100%; min-height: 36px; margin-top: 12px; padding: 8px 12px; border: 1px solid #548e77; border-radius: 5px; background: #1a3a31; color: #c5f3d8; font: inherit; font-size: 12px; font-weight: 650; cursor: pointer; }
+.card-action:hover:not(:disabled) { background: #254c40; }
+.card-action:disabled { opacity: .5; cursor: wait; }
+@media (max-width: 760px) { .card-action, .card-details { min-height: 44px; } }

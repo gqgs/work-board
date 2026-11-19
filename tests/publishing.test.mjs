@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { publishingInfo, publishingMatches, publishingGroup, createPublishingTracker, publishingAlerts, formatTask, parseTask } from "../docs/model.mjs";
+import { publishingInfo, publishingMatches, publishingGroup, createPublishingTracker, publishingAlerts, formatTask, parseTask, quickAction, applyQuickAction } from "../docs/model.mjs";
 
 const now = Date.parse("2030-01-02T16:00:00Z");
 const meta = { version: 1, channel: "example", state: "ready", due: "2030-01-03T13:00:00-03:00" };
@@ -99,4 +99,63 @@ test("Upload Ready includes overdue ready but never draft, scheduled, verificati
     assert.equal(publishingMatches(task, "upload-ready", "", now), group === "upload-ready");
     assert.equal(JSON.stringify(task), before);
   }
+});
+
+
+test("one contextual next step, with no terminal, held or malformed publishing actions", () => {
+  const cases = [
+    [card({ ...meta, state: "draft" }), "ready"],
+    [card({ ...meta, state: "draft", due: "2000-01-01T00:00:00Z" }), "ready"],
+    [card(), "complete"],
+    [card({ ...meta, state: "scheduled" }), "complete"],
+    [card({ ...meta, state: "scheduled", due: "2000-01-01T00:00:00Z" }), "complete"],
+    [card(meta, { status: "done" }), null], [card(meta, { status: "parked" }), null],
+    [card({ ...meta, state: "hold" }), null], [card({ ...meta, version: 99 }), null],
+    [card({ ...meta, state: "published", published_url: "https://example.com/post" }), null]
+  ];
+  for (const [task, action] of cases) assert.equal(quickAction(task, now)?.id || null, action);
+  for (const [status, action, next] of [["backlog", "start", "active"], ["active", "review", "review"], ["review", "complete", "done"]]) {
+    const task = card(meta, { status, description: "Ordinary engineering card" });
+    assert.equal(quickAction(task).id, action);
+    assert.equal(applyQuickAction(task, action).status, next);
+  }
+});
+
+test("mark ready changes only live metadata, preserves nested examples and CRLF prose", () => {
+  const example = '````markdown\r\n```work-publish\r\n{"version":99}\r\n```\r\n````\r\n';
+  const before = example + "Context before.\r\n";
+  const after = "\r\nContext after: keep this. ";
+  const task = card({ ...meta, state: "draft" });
+  task.description = before + "```work-publish\r\n" + JSON.stringify({ ...meta, state: "draft" }) + "\r\n```" + after;
+  const original = JSON.stringify(task);
+  const result = applyQuickAction(task, "ready", now);
+  assert.ok(result.description.startsWith(before));
+  assert.ok(result.description.endsWith(after.trimEnd()));
+  assert.equal(publishingInfo(result, now).declaredState, "ready");
+  assert.equal(result.status, task.status);
+  assert.equal(result.url, task.url);
+  assert.equal(JSON.stringify(task), original);
+  assert.throws(() => applyQuickAction(result, "ready", now), /no longer matches/);
+});
+
+test("complete requires no receipt, changes no metadata and suppresses all publishing reminders", () => {
+  for (const state of ["ready", "scheduled"]) {
+    const task = card({ ...meta, state, due: "2000-01-01T00:00:00Z" });
+    const result = applyQuickAction(task, "complete", now);
+    assert.equal(result.status, "done");
+    assert.equal(result.description, task.description.trim());
+    assert.equal(result.url, "");
+    assert.equal(publishingInfo(result, now).state, "closed");
+    assert.equal(publishingInfo(result, now).label, "Done · user-reported");
+    assert.equal(publishingInfo(result, now).publishedUrl, "");
+    assert.deepEqual(publishingAlerts([result], createPublishingTracker(), now), []);
+    assert.equal(quickAction(result), null);
+    assert.throws(() => applyQuickAction(result, "complete", now), /no longer matches/);
+  }
+  // Completing the board item does not fabricate/upgrade its optional receipt.
+  const linked = card({ ...meta, published_url: "https://example.com/post" });
+  const complete = applyQuickAction(linked, "complete", now);
+  assert.equal(publishingInfo(complete, now).publishedUrl, "https://example.com/post");
+  assert.equal(publishingInfo(complete, now).state, "closed");
+  assert.equal(publishingInfo(card({ ...meta, state: "published" }), now).state, "invalid");
 });

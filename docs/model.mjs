@@ -91,33 +91,45 @@ export function identicalTask(a, b) {
   return [...FIELDS, "description"].every(key => String(a[key] ?? "") === String(b[key] ?? ""));
 }
 
-// Optional publishing metadata lives in the Markdown body, not the strict
-// front matter. Older clients can still read, edit and round-trip these cards.
-export function publishingInfo(task, now = Date.now()) {
-  const source = String(task.description || "");
-  const invalid = { state: "invalid", label: "Check publishing metadata", channel: "", due: "" };
-  let fence = null, body = [], publishing = false, malformed = false, count = 0;
+// Locate the one live top-level block while preserving every byte outside it.
+// Nested documentation examples are not editable publishing metadata.
+function publishingBlock(description) {
+  const source = String(description || "");
+  let fence = null, publishing = false, malformed = false, count = 0;
+  let offset = 0, start = 0;
   const blocks = [];
-  for (const line of source.replace(/\r\n?/g, "\n").split("\n")) {
+  for (const rawLine of source.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) || []) {
+    const line = rawLine.replace(/(?:\r\n|\r|\n)$/, "");
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
-        if (publishing) blocks.push(body.join("\n"));
-        fence = null; publishing = false; body = [];
-      } else if (publishing) body.push(line);
+        if (publishing) blocks.push({ start, end: offset, raw: source.slice(start, offset) });
+        fence = null; publishing = false;
+      }
     } else if (marker) {
       fence = marker[1];
       if (marker[2].trim().startsWith("work-publish")) {
         count++;
         publishing = marker[1][0] === "`" && marker[2].trim() === "work-publish";
         if (!publishing) malformed = true;
+        start = offset + rawLine.length;
       }
     }
+    offset += rawLine.length;
   }
   if (!count) return null;
-  if (malformed || count !== 1 || blocks.length !== 1) return invalid;
+  return malformed || count !== 1 || blocks.length !== 1 ? { invalid: true } : blocks[0];
+}
+
+// Optional publishing metadata lives in the Markdown body, not the strict
+// front matter. Older clients can still read, edit and round-trip these cards.
+export function publishingInfo(task, now = Date.now()) {
+  const invalid = { state: "invalid", label: "Check publishing metadata", channel: "", due: "" };
+  const block = publishingBlock(task.description);
+  if (!block) return null;
+  if (block.invalid) return invalid;
   try {
-    const data = JSON.parse(blocks[0]);
+    const data = JSON.parse(block.raw);
     const keys = ["version", "channel", "state", "due", "published_url"];
     if (!data || Array.isArray(data) || Object.keys(data).some(key => !keys.includes(key)) ||
         data.version !== 1 || typeof data.channel !== "string" || !/^[a-z][a-z0-9-]{0,39}$/.test(data.channel) ||
@@ -139,9 +151,41 @@ export function publishingInfo(task, now = Date.now()) {
     else if (state === "scheduled" && Date.parse(due) <= now) state = "verify";
     else if (["draft", "ready"].includes(state) && due && Date.parse(due) <= now) state = "overdue";
     const labels = { draft: "Preparing", ready: "Ready", scheduled: "Scheduled", published: "Published",
-      hold: "On hold", closed: "Closed", overdue: "Overdue", verify: "Needs verification" };
+      hold: "On hold", closed: "Done · user-reported", overdue: "Overdue", verify: "Needs verification" };
     return { state, label: labels[state], channel: data.channel, due, publishedUrl, declaredState: data.state };
   } catch { return invalid; }
+}
+
+// Exactly one obvious next step. These actions only update the private board.
+export function quickAction(task, now = Date.now()) {
+  if (["done", "parked"].includes(task.status)) return null;
+  const info = publishingInfo(task, now);
+  if (info) {
+    if (["invalid", "hold", "published", "closed"].includes(info.state)) return null;
+    if (info.declaredState === "draft") return { id: "ready", label: "Mark ready" };
+    if (["ready", "scheduled"].includes(info.declaredState)) return { id: "complete", label: "Mark complete" };
+    return null;
+  }
+  return {
+    backlog: { id: "start", label: "Start" },
+    active: { id: "review", label: "Move to review" },
+    review: { id: "complete", label: "Mark done" }
+  }[task.status] || null;
+}
+
+export function applyQuickAction(task, action, now = Date.now()) {
+  if (quickAction(task, now)?.id !== action) throw new Error("This action no longer matches the task. Refresh and review its current state.");
+  if (action === "ready") {
+    const block = publishingBlock(task.description);
+    const metadata = { ...JSON.parse(block.raw), state: "ready" };
+    const newline = /\r\n|\r|\n/.exec(block.raw)?.[0] || "\n";
+    return validateTask({ ...task, description: task.description.slice(0, block.start)
+      + JSON.stringify(metadata) + newline + task.description.slice(block.end) });
+  }
+  // No permalink is invented and existing publishing metadata is unchanged.
+  // done + non-published means closed, not independently verified publication.
+  const status = { start: "active", review: "review", complete: "done" }[action];
+  return validateTask({ ...task, status });
 }
 
 export function publishingMatches(task, filter = "", channel = "", now = Date.now()) {
@@ -157,7 +201,7 @@ export const PUBLISHING_COLUMNS = [
   { id: "preparing", label: "Preparing", description: "Not yet ready, including overdue drafts" },
   { id: "scheduled", label: "Scheduled", description: "Recorded schedule; publication is not assumed" },
   { id: "published", label: "Published", description: "Recorded publication receipt" },
-  { id: "hold", label: "On hold / Closed", description: "Explicitly paused, parked or closed" },
+  { id: "hold", label: "Done / On hold", description: "Completed without a publication claim, paused or parked" },
   { id: "invalid", label: "Check metadata", description: "Correct the publishing block before continuing" }
 ];
 

@@ -129,3 +129,23 @@ The tab favicon and both notification types reuse the public EigenDynamics wiki
 mark through [local assets](docs/assets/README.md), without contacting the wiki.
 The icon is optional; browsers and operating systems may ignore it or show their
 own browser badge alongside it. Notification delivery remains best-effort.
+
+## One-click card actions
+
+Each actionable card has one next-step button. Publishing drafts get **Mark
+ready**; ready and scheduled cards (including Needs verification) get **Mark
+complete** after you have manually uploaded. Completion changes only task
+`status` to `done`, retaining the original publishing block, dates and links.
+It stops ready/overdue/verification reminders and appears in **Done / On hold**
+with **Done · user-reported**. This is your report of completion,
+not an upload, schedule, or independent confirmation that a post is public.
+No URL is invented or required. If you have a public permalink, the existing
+Edit task form can record `state: "published"` and `published_url` in the
+publishing block; Published still requires a credential-free HTTPS receipt.
+
+Ordinary work has **Start**, **Move to review**, or **Mark done** for Backlog,
+Active, and Review respectively. Terminal, parked, held, and malformed
+publishing cards have no shortcut. **Details** and Edit remain available.
+Each shortcut uses the existing SHA-protected GitHub save. Repeated clicks
+are blocked during saves. A failed/uncertain save refreshes the board without
+replaying it; if reconciliation fails, shortcuts wait for a successful Refresh.

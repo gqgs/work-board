@@ -2,7 +2,7 @@ import {
   COLUMNS, createTaskId, formatTask, identicalTask, isReviewPr,
   parseTask, sortTasks, validateTask, renderTaskMarkdown,
   publishingInfo, publishingMatches, publishingGroup, PUBLISHING_COLUMNS,
-  createPublishingTracker, publishingAlerts
+  createPublishingTracker, publishingAlerts, quickAction, applyQuickAction
 } from "./model.mjs";
 
 const REPO = "gqgs/work";
@@ -25,6 +25,7 @@ let notificationVersion = 0;
 let publishingTracker = createPublishingTracker();
 const openNotifications = new Set();
 let latestTestNotification;
+let quickActionsBlocked = false;
 
 function node(name, className, text) {
   const element = H(name);
@@ -138,6 +139,7 @@ async function loadTasks({ token = state.token, authenticate = false } = {}) {
     if (authenticate) state.token = token;
     state.tasks = sortTasks(tasks);
     state.loaded = true;
+    quickActionsBlocked = false;
     lastChecked = Date.now();
     notice(state.token ? "" : "Read-only mode. Connect GitHub to create or change tasks.");
     render();
@@ -199,10 +201,9 @@ function renderProjects() {
 
 function createCard(task, draggable = true) {
   const card = node("article", "task-card");
-  card.tabIndex = 0;
   card.draggable = draggable && !!state.token;
-  card.setAttribute("role", "button");
-  card.setAttribute("aria-label", "Read details for " + task.title + ", " + task.status);
+  card.dataset.taskId = task.id;
+  card.setAttribute("aria-label", task.title + ", " + task.status);
   const top = node("div", "card-overline");
   const project = node("span", "project-pill", task.project);
   project.title = task.project;
@@ -226,7 +227,11 @@ function createCard(task, draggable = true) {
   if (task.description) card.append(node("p", "card-description", task.description));
   const footer = node("div", "card-footer");
   footer.append(node("span", "card-id", task.id.slice(-8)));
-  footer.append(node("span", "card-open", "Details →"));
+  const details = node("button", "card-details", "Details →");
+  details.type = "button";
+  details.setAttribute("aria-label", "Read details for " + task.title);
+  details.addEventListener("click", event => { event.stopPropagation(); viewTask(task); });
+  footer.append(details);
   if (task.url) {
     const link = node("a", "", "Link ↗");
     link.href = task.url;
@@ -236,16 +241,22 @@ function createCard(task, draggable = true) {
     footer.append(link);
   }
   card.append(footer);
+  const action = quickAction(task);
+  if (action && state.token) {
+    const button = node("button", "card-action", action.label);
+    button.type = "button";
+    button.dataset.taskId = task.id;
+    button.setAttribute("aria-label", action.label + ": " + task.title);
+    button.disabled = state.saving || state.loading || !state.loaded || quickActionsBlocked;
+    button.addEventListener("click", event => {
+      event.stopPropagation();
+      performQuickAction(task, action.id);
+    });
+    card.append(button);
+  }
   card.addEventListener("click", () => viewTask(task));
-  card.addEventListener("keydown", event => {
-    if (event.target !== card) return;
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      viewTask(task);
-    }
-  });
   card.addEventListener("dragstart", event => {
-    if (!draggable || !state.token || state.saving) { event.preventDefault(); return; }
+    if (!draggable || !state.token || state.saving || event.target.closest?.("button, a")) { event.preventDefault(); return; }
     state.dragging = task.id;
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", task.id);
@@ -257,6 +268,40 @@ function createCard(task, draggable = true) {
     document.querySelectorAll(".drag-over").forEach(el => el.classList.remove("drag-over"));
   });
   return card;
+}
+
+async function performQuickAction(previous, action) {
+  if (!state.token || !state.loaded || state.saving || state.loading || quickActionsBlocked) return;
+  const current = state.tasks.find(task => task.id === previous.id);
+  if (!current || current.sha !== previous.sha || !identicalTask(current, previous)) {
+    render();
+    showToast("Task changed. Review its current state before trying again.", true);
+    return;
+  }
+  try {
+    if (quickAction(current)?.id !== action) return;
+    const next = applyQuickAction(current, action);
+    await saveTask(next, current);
+    const publication = publishingInfo(next);
+    if (action === "complete" && publication) {
+      showToast("Marked complete on this board. No publication was verified.");
+    }
+    const control = document.querySelector('[data-task-id="' + current.id + '"] .card-details');
+    (control || $("publishing-filter")).focus();
+  } catch (error) {
+    // A failed response may follow a successful commit. Reconcile, never replay.
+    quickActionsBlocked = true;
+    updateControls();
+    try {
+      const loaded = await loadTasks();
+      if (!loaded || !state.token) return;
+      showToast(describeError(error) + " Board refreshed; review the current state before retrying.", true);
+    } catch {
+      notice("Could not verify the save result. Refresh successfully before retrying a quick action.", true);
+      showToast("Quick actions paused until a successful refresh. No automatic retry was sent.", true);
+    }
+    updateControls();
+  }
 }
 
 function createColumn(column, tasks, { publishing = false } = {}) {
@@ -286,7 +331,7 @@ function createColumn(column, tasks, { publishing = false } = {}) {
     ordered.forEach(task => items.append(createCard(task, !publishing)));
   }
   section.append(heading, items);
-  if (publishing) return section; // Derived lanes never write engineering statuses.
+  if (publishing) return section; // Derived lane drops never write engineering statuses.
   section.addEventListener("dragover", event => {
     if (!state.dragging || state.saving) return;
     event.preventDefault();
@@ -507,6 +552,9 @@ function setSaving(value) {
 }
 
 function updateControls() {
+  document.querySelectorAll(".card-action").forEach(button => {
+    button.disabled = !state.token || !state.loaded || state.saving || state.loading || quickActionsBlocked;
+  });
   $("task-submit").disabled = state.saving;
   $("new-task-btn").disabled = state.saving;
   $("refresh-btn").disabled = state.saving || state.loading;
@@ -530,6 +578,7 @@ async function saveTask(nextInput, previous = null) {
     throw new Error("Connect GitHub to save changes.");
   }
   if (state.saving) throw new Error("Another change is already being saved.");
+  if (previous && !previous.sha) throw new Error("Task file SHA is missing. Refresh before changing it.");
   const next = validateTask(nextInput);
   if (previous && identicalTask(next, previous)) return false;
   const newStatus = previous && previous.status !== next.status;
@@ -692,6 +741,7 @@ function disconnect() {
   if (state.saving) return;
   invalidateLoad();
   state.token = "";
+  quickActionsBlocked = false;
   lastChecked = 0;
   clearTimeout(pollTimer);
   stopPublishingAlerts({ reset: true });
