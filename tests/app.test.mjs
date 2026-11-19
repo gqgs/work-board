@@ -43,7 +43,7 @@ function setup(fetch, globals = {}) {
       addEventListener(type, handler) { (this.listeners[type] ||= []).push(handler); },
       fire(type, properties = {}) {
         const event = { target: this, defaultPrevented: false,
-          preventDefault() { this.defaultPrevented = true; }, ...properties };
+          preventDefault() { this.defaultPrevented = true; }, stopPropagation() { this.propagationStopped = true; }, ...properties };
         for (const handler of this.listeners[type] || []) handler(event);
         if (type === "cancel" && !event.defaultPrevented) this.close();
         return event;
@@ -61,6 +61,7 @@ function setup(fetch, globals = {}) {
     setTimeout: () => 0, clearTimeout() {}, ...globals,
     Option: function(text, value) { return { textContent: text, value }; },
     document: { createElement: () => element("generated-" + ++generated), getElementById: element, querySelector: element, querySelectorAll: selector => {
+      if (selector === ".card-action") return [...elements.values()].filter(element => element.className === "card-action");
       if (selector === "dialog") return [element("auth-dialog"), element("task-dialog")];
       if (selector === "[data-close]") return [authCancel, taskCancel];
       if (selector === '[data-close="task-dialog"]') return [taskCancel];
@@ -74,7 +75,7 @@ function setup(fetch, globals = {}) {
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
       closeDialog, openTask, viewTask, renderTaskView, editViewedTask,
       disconnect, describeError, renderStats, init, togglePublishingAlerts, pollTasks,
-      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects, sendTestAlert };
+      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects, sendTestAlert, createCard, performQuickAction };
   `, context);
   return { ...context.app, element };
 }
@@ -692,4 +693,145 @@ test("an unavailable optional icon falls back once for both alert types", async 
   assert.equal(attempts, 4);
   assert.equal(alerts.requests(), 0);
   assert.equal(JSON.stringify(app.state.tasks), before);
+});
+
+test("card actions and Details are separate native buttons, with one shortcut and no enclosing button role", () => {
+  const app = setup(async () => response({ tree: [] }));
+  app.state.token = "fake-token"; app.state.loaded = true;
+  const ready = publication("ready"), draft = publication("draft");
+  const flatten = element => [element, ...(element.children || []).flatMap(flatten)];
+  for (const [item, label] of [[ready, "Mark complete"], [draft, "Mark ready"], [task, "Start"]]) {
+    const card = app.createCard(item);
+    assert.notEqual(card.role, "button");
+    assert.equal(card.tabIndex, undefined);
+    assert.equal(card.listeners.keydown, undefined);
+    const buttons = flatten(card).filter(node => node.className === "card-action");
+    assert.equal(buttons.length, 1);
+    assert.equal(buttons[0].textContent, label);
+    assert.equal(buttons[0].type, "button");
+    assert.equal(buttons[0].disabled, false);
+    assert.equal(buttons[0]["aria-label"], label + ": " + item.title);
+    const details = flatten(card).find(node => node.className === "card-details");
+    assert.equal(details.type, "button");
+    assert.equal(details.fire("click").propagationStopped, true);
+    assert.equal(app.state.viewing, item.id);
+  }
+  assert.equal(flatten(app.createCard({ ...ready, status: "done" })).filter(node => node.className === "card-action").length, 0);
+  app.state.token = "";
+  assert.equal(flatten(app.createCard(ready)).filter(node => node.className === "card-action").length, 0);
+});
+
+test("one click completes with the original SHA, no dialog or fabricated receipt, repeated clicks make one write", async () => {
+  const pending = deferred(), calls = [];
+  const app = setup(async (url, options) => { calls.push({ url, ...options }); return pending.promise; });
+  const item = publication("ready");
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  app.element("task-dialog").open = false; app.element("view-dialog").open = false;
+  const card = app.createCard(item);
+  const button = card.children.find(node => node.className === "card-action");
+  assert.equal(button.fire("click").propagationStopped, true);
+  assert.equal(button.disabled, true);
+  button.fire("click");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].method, "PUT");
+  const payload = JSON.parse(calls[0].body);
+  assert.equal(payload.sha, "old-sha");
+  const saved = model.parseTask(Buffer.from(payload.content, "base64").toString());
+  assert.equal(saved.status, "done");
+  assert.equal(saved.description, item.description);
+  assert.equal(model.publishingInfo(saved).publishedUrl, "");
+  assert.equal(app.element("task-dialog").open, false);
+  assert.equal(app.element("view-dialog").open, false);
+  pending.resolve(response({ content: { sha: "completed-sha" } }));
+  await new Promise(setImmediate);
+  assert.equal(app.state.tasks[0].status, "done");
+  assert.equal(app.state.tasks[0].sha, "completed-sha");
+  assert.match(app.element("toast").textContent, /No publication was verified/);
+  await app.performQuickAction(app.state.tasks[0], "complete"); // terminal state cannot repeat
+  assert.equal(calls.length, 1);
+});
+
+test("quick-action conflicts refresh without overwriting and a reviewed retry uses the new SHA", async () => {
+  let writes = 0;
+  const item = publication("ready"), revised = { ...item, title: "Changed elsewhere", sha: "revised-sha" };
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") {
+      writes++;
+      const payload = JSON.parse(options.body);
+      if (writes === 1) { assert.equal(payload.sha, "old-sha"); return response({ message: "Conflict" }, 409); }
+      assert.equal(payload.sha, "revised-sha");
+      return response({ content: { sha: "completed-sha" } });
+    }
+    return response(url.includes("/trees/") ? { tree: [{ type: "blob", path: task.path, sha: "revised-sha" }] } : blob(revised));
+  });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  await app.performQuickAction(item, "complete");
+  assert.equal(writes, 1);
+  assert.equal(app.state.tasks[0].title, revised.title);
+  assert.equal(app.state.tasks[0].status, item.status);
+  assert.match(app.element("toast").textContent, /Board refreshed.*before retrying/);
+  await app.performQuickAction(item, "complete"); // stale captured card is not replayed
+  assert.equal(writes, 1);
+  await app.performQuickAction(app.state.tasks[0], "complete");
+  assert.equal(writes, 2);
+  assert.equal(app.state.tasks[0].status, "done");
+});
+
+test("lost save response reconciles completed state without sending a second write", async () => {
+  let writes = 0;
+  const item = publication("ready"), completed = { ...item, status: "done" };
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") { writes++; throw new TypeError("Network interrupted"); }
+    return response(url.includes("/trees/") ? { tree: [{ type: "blob", path: task.path, sha: "committed-sha" }] } : blob(completed));
+  });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  await app.performQuickAction(item, "complete");
+  assert.equal(writes, 1);
+  assert.equal(app.state.tasks[0].status, "done");
+  assert.equal(app.state.tasks[0].sha, "committed-sha");
+  assert.equal(model.quickAction(app.state.tasks[0]), null);
+});
+
+test("unreconciled failure pauses quick actions until refresh, never drops missing-SHA protection", async () => {
+  let online = false, writes = 0;
+  const item = publication("ready");
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") { writes++; throw new TypeError("Offline"); }
+    if (!online) throw new TypeError("Offline");
+    return response(url.includes("/trees/") ? tree : blob(item));
+  });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  await app.performQuickAction(item, "complete");
+  assert.match(app.element("notice").textContent, /Refresh successfully/);
+  await app.performQuickAction(item, "complete");
+  assert.equal(writes, 1);
+  const button = app.createCard(item).children.find(node => node.className === "card-action");
+  assert.equal(button.disabled, true);
+  online = true;
+  await app.loadTasks();
+  assert.equal(button.disabled, false);
+  await assert.rejects(app.saveTask({ ...item, status: "done" }, { ...item, sha: undefined }), /SHA is missing/);
+  assert.equal(writes, 1);
+});
+
+
+test("draft shortcut saves only readiness metadata, and an engineering shortcut saves only status", async () => {
+  const calls = [];
+  const app = setup(async (url, options) => { calls.push({ url, ...options }); return response({ content: { sha: "next-sha" } }); });
+  app.state.token = "fake-token"; app.state.loaded = true;
+  for (const item of [publication("draft"), task]) {
+    app.state.tasks = [item];
+    const action = model.quickAction(item);
+    await app.performQuickAction(item, action.id);
+    const payload = JSON.parse(calls.at(-1).body);
+    const saved = model.parseTask(Buffer.from(payload.content, "base64").toString());
+    assert.equal(payload.sha, item.sha);
+    assert.equal(saved.title, item.title);
+    assert.equal(saved.url, item.url);
+    assert.equal(saved.status, action.id === "ready" ? item.status : "active");
+    if (action.id === "ready") assert.equal(model.publishingInfo(saved).state, "ready");
+    else assert.equal(saved.description, item.description);
+  }
+  assert.equal(calls.length, 2);
+  assert.ok(calls.every(call => call.method === "PUT" && call.url.startsWith("https://api.github.com/repos/gqgs/work/contents/tasks/")));
 });
