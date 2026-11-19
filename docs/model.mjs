@@ -147,7 +147,27 @@ export function publishingInfo(task, now = Date.now()) {
 export function publishingMatches(task, filter = "", channel = "", now = Date.now()) {
   const info = publishingInfo(task, now);
   return Boolean((!channel || info?.channel === channel) &&
-    (!filter || (info && (filter === "all" || info.state === filter))));
+    (!filter || (info && (filter === "all" || info.state === filter ||
+      (filter === "upload-ready" && publishingGroup(task, now) === "upload-ready")))));
+}
+
+export const PUBLISHING_COLUMNS = [
+  { id: "upload-ready", label: "Upload Ready", description: "Prepared for manual publishing; not posting approval" },
+  { id: "verify", label: "Needs verification", description: "Scheduled time passed; check the actual result" },
+  { id: "preparing", label: "Preparing", description: "Not yet ready, including overdue drafts" },
+  { id: "scheduled", label: "Scheduled", description: "Recorded schedule; publication is not assumed" },
+  { id: "published", label: "Published", description: "Recorded publication receipt" },
+  { id: "hold", label: "On hold / Closed", description: "Explicitly paused, parked or closed" },
+  { id: "invalid", label: "Check metadata", description: "Correct the publishing block before continuing" }
+];
+
+export function publishingGroup(task, now = Date.now()) {
+  const info = publishingInfo(task, now);
+  if (!info) return null;
+  if (["hold", "closed"].includes(info.state)) return "hold";
+  if (["ready", "overdue"].includes(info.state) && info.declaredState === "ready") return "upload-ready";
+  if (info.declaredState === "draft") return "preparing";
+  return info.state;
 }
 
 export function createPublishingTracker() {

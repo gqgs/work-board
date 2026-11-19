@@ -51,11 +51,19 @@ The tests use synthetic fixtures and fake tokens. They never read or write live 
 
 ## Manual publishing and optional tab alerts
 
-Choose **Publishing** (or Ready, Overdue, Needs verification, Scheduled, Published,
+Choose **Publishing** (or Upload Ready, Overdue, Needs verification, Scheduled, Published,
 On hold, Check metadata) and a channel. This is a planning view, not a publisher:
 no uploads, provider credentials, external posts or scheduling APIs are involved.
 Dates display in **America/Sao_Paulo**. A past scheduled time means **Needs
 verification**, never an automatic claim that the post is public.
+
+Publishing is grouped into derived lanes, with a highlighted **Upload Ready**
+lane first. It includes `ready` items whose due time has passed, visibly marked
+**Overdue** and sorted before undated/future items. Overdue drafts stay in
+Preparing; scheduled items needing verification never enter Upload Ready.
+Every card appears in one lane only. These lanes do not change persisted task
+statuses or support drag-to-status moves; the normal engineering board is unchanged.
+On narrow screens publishing lanes stack vertically, Upload Ready first.
 
 Use one task per clip/channel delivery. Keep the existing six front-matter
 fields. Add exactly one top-level fenced block to its Markdown description:
@@ -108,3 +116,11 @@ basis. Denied/unsupported notifications do not prevent using the board.
 notification settings can delay or hide alerts. No service worker, push server
 or reliable closed-tab reminder is provided; use a separate private reminder
 for that. Never persist the GitHub token to work around this limitation.
+
+To check browser alerts: connect, choose **Enable tab alerts** and allow the
+browser permission if desired, then choose **Send test alert**. The test button
+never requests permission itself. It sends only a generic synthetic notification,
+without editing tasks, creating due dates, or resetting automatic alert history.
+The inline result distinguishes unavailable/blocked/failed notifications from
+**browser accepted**. Acceptance is not proof that the OS displayed it or that
+you saw it: check the system notification center and Do Not Disturb settings.
