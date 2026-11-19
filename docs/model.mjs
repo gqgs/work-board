@@ -96,14 +96,14 @@ export function identicalTask(a, b) {
 function publishingBlock(description) {
   const source = String(description || "");
   let fence = null, publishing = false, malformed = false, count = 0;
-  let offset = 0, start = 0;
+  let offset = 0, start = 0, fullStart = 0;
   const blocks = [];
   for (const rawLine of source.match(/[^\r\n]*(?:\r\n|\r|\n|$)/g) || []) {
     const line = rawLine.replace(/(?:\r\n|\r|\n)$/, "");
     const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
     if (fence) {
       if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
-        if (publishing) blocks.push({ start, end: offset, raw: source.slice(start, offset) });
+        if (publishing) blocks.push({ start, end: offset, fullStart, fullEnd: offset + rawLine.length, raw: source.slice(start, offset) });
         fence = null; publishing = false;
       }
     } else if (marker) {
@@ -112,6 +112,7 @@ function publishingBlock(description) {
         count++;
         publishing = marker[1][0] === "`" && marker[2].trim() === "work-publish";
         if (!publishing) malformed = true;
+        fullStart = offset;
         start = offset + rawLine.length;
       }
     }
@@ -146,12 +147,12 @@ export function publishingInfo(task, now = Date.now()) {
     if (data.state === "scheduled" && !due) return invalid;
     if (data.state === "published" && !publishedUrl) return invalid;
     let state = data.state;
-    if (task.status === "parked" || state === "hold") state = "hold";
-    else if (task.status === "done" && state !== "published") state = "closed";
+    if (task.status === "done" || state === "published") state = publishedUrl ? "published" : "closed";
+    else if (task.status === "parked" || state === "hold") state = "hold";
     else if (state === "scheduled" && Date.parse(due) <= now) state = "verify";
     else if (["draft", "ready"].includes(state) && due && Date.parse(due) <= now) state = "overdue";
     const labels = { draft: "Preparing", ready: "Ready", scheduled: "Scheduled", published: "Published",
-      hold: "On hold", closed: "Done · user-reported", overdue: "Overdue", verify: "Needs verification" };
+      hold: "On hold", closed: "Done", overdue: "Overdue", verify: "Needs verification" };
     return { state, label: labels[state], channel: data.channel, due, publishedUrl, declaredState: data.state };
   } catch { return invalid; }
 }
@@ -176,23 +177,97 @@ export function quickAction(task, now = Date.now()) {
 export function applyQuickAction(task, action, now = Date.now()) {
   if (quickAction(task, now)?.id !== action) throw new Error("This action no longer matches the task. Refresh and review its current state.");
   if (action === "ready") {
-    const block = publishingBlock(task.description);
-    const metadata = { ...JSON.parse(block.raw), state: "ready" };
-    const newline = /\r\n|\r|\n/.exec(block.raw)?.[0] || "\n";
-    return validateTask({ ...task, description: task.description.slice(0, block.start)
-      + JSON.stringify(metadata) + newline + task.description.slice(block.end) });
+    return updatePublishingMetadata(task, { state: "ready" });
   }
   // No permalink is invented and existing publishing metadata is unchanged.
-  // done + non-published means closed, not independently verified publication.
+  // done without a receipt means closed, not independently verified publication.
   const status = { start: "active", review: "review", complete: "done" }[action];
   return validateTask({ ...task, status });
+}
+
+function updatePublishingMetadata(task, patch) {
+  const block = publishingBlock(task.description);
+  if (!block || block.invalid) throw new Error("Check publishing metadata before changing it.");
+  const metadata = { ...JSON.parse(block.raw), ...patch };
+  const newline = /\r\n|\r|\n/.exec(block.raw)?.[0] || "\n";
+  return validateTask({ ...task, description: task.description.slice(0, block.start)
+    + JSON.stringify(metadata) + newline + task.description.slice(block.end) });
+}
+
+// Hide the machine-readable block in read views, not in the saved Markdown/editor.
+export function displayDescription(task) {
+  const info = publishingInfo(task);
+  if (!info || info.state === "invalid") return task.description || "";
+  const block = publishingBlock(task.description);
+  return (task.description.slice(0, block.fullStart) + task.description.slice(block.fullEnd)).trim();
+}
+
+const RECEIPT_PLATFORMS = {
+  x: "x", twitter: "x", instagram: "instagram", ig: "instagram",
+  youtube: "youtube", yt: "youtube", "youtube-shorts": "youtube", tiktok: "tiktok"
+};
+
+function receiptPlatform(channel) {
+  return Object.hasOwn(RECEIPT_PLATFORMS, channel) ? RECEIPT_PLATFORMS[channel] : null;
+}
+
+export function canAddPostLink(task) {
+  const info = publishingInfo(task);
+  return Boolean(task.status === "done" && info?.state === "closed" && !info.publishedUrl && receiptPlatform(info.channel));
+}
+
+// Syntax/host validation only. Never fetch a platform, resolve a shortener, or
+// claim the post exists/is public. Drop tracking queries and fragments.
+export function validatePostLink(value, channel) {
+  if (typeof value !== "string" || value.length > 2048 || /[\\\u0000-\u001f\u007f]/.test(value)) throw new Error("Use a plain HTTPS public post link.");
+  let url;
+  try { url = new URL(safeUrl(value)); } catch { throw new Error("Use a valid HTTPS public post link without credentials."); }
+  if (url.port) throw new Error("Use the platform's normal HTTPS public post link.");
+  const platform = receiptPlatform(channel), host = url.hostname, path = url.pathname;
+  let match;
+  if (platform === "x" && ["x.com", "www.x.com", "twitter.com", "www.twitter.com", "mobile.twitter.com"].includes(host)) {
+    match = /^\/([A-Za-z0-9_]{1,15})\/status\/([0-9]{1,25})\/?$/.exec(path);
+    if (match) return "https://x.com/" + match[1] + "/status/" + match[2];
+    match = /^\/i\/web\/status\/([0-9]{1,25})\/?$/.exec(path);
+    if (match) return "https://x.com/i/web/status/" + match[1];
+  }
+  if (platform === "instagram" && ["instagram.com", "www.instagram.com", "m.instagram.com"].includes(host)) {
+    match = /^\/(p|reel|tv)\/([A-Za-z0-9_-]{5,64})\/?$/.exec(path);
+    if (match) return "https://www.instagram.com/" + match[1] + "/" + match[2] + "/";
+  }
+  if (platform === "youtube") {
+    const id = "[A-Za-z0-9_-]{11}";
+    if (["youtu.be", "www.youtu.be"].includes(host)) {
+      match = new RegExp("^/(" + id + ")/?$").exec(path);
+      if (match) return "https://www.youtube.com/watch?v=" + match[1];
+    }
+    if (["youtube.com", "www.youtube.com", "m.youtube.com"].includes(host)) {
+      if (path === "/watch" && url.searchParams.getAll("v").length === 1 && new RegExp("^" + id + "$").test(url.searchParams.get("v")))
+        return "https://www.youtube.com/watch?v=" + url.searchParams.get("v");
+      match = new RegExp("^/(shorts|live)/(" + id + ")/?$").exec(path);
+      if (match) return "https://www.youtube.com/" + match[1] + "/" + match[2];
+    }
+  }
+  if (platform === "tiktok" && ["tiktok.com", "www.tiktok.com", "m.tiktok.com"].includes(host)) {
+    match = /^\/@([A-Za-z0-9_.]{1,24})\/video\/([0-9]{1,25})\/?$/.exec(path);
+    if (match) return "https://www.tiktok.com/@" + match[1] + "/video/" + match[2];
+  }
+  throw new Error("Use a full public " + (platform || "supported-platform") + " post/video link, not a profile, dashboard or redirect link.");
+}
+
+export function addPostLink(task, value) {
+  const info = publishingInfo(task);
+  if (info?.publishedUrl) throw new Error("A post link is already recorded. It will not be overwritten.");
+  if (!canAddPostLink(task)) throw new Error("Mark this supported publishing card complete before adding a post link.");
+  const published_url = validatePostLink(value, info.channel);
+  return updatePublishingMetadata(task, { state: "published", published_url });
 }
 
 export function publishingMatches(task, filter = "", channel = "", now = Date.now()) {
   const info = publishingInfo(task, now);
   return Boolean((!channel || info?.channel === channel) &&
     (!filter || (info && (filter === "all" || info.state === filter ||
-      (filter === "upload-ready" && publishingGroup(task, now) === "upload-ready")))));
+      (["upload-ready", "completed"].includes(filter) && publishingGroup(task, now) === filter)))));
 }
 
 export const PUBLISHING_COLUMNS = [
@@ -200,15 +275,16 @@ export const PUBLISHING_COLUMNS = [
   { id: "verify", label: "Needs verification", description: "Scheduled time passed; check the actual result" },
   { id: "preparing", label: "Preparing", description: "Not yet ready, including overdue drafts" },
   { id: "scheduled", label: "Scheduled", description: "Recorded schedule; publication is not assumed" },
-  { id: "published", label: "Published", description: "Recorded publication receipt" },
-  { id: "hold", label: "Done / On hold", description: "Completed without a publication claim, paused or parked" },
+  { id: "completed", label: "Completed", description: "Done; Published when a post link is recorded" },
+  { id: "hold", label: "On hold", description: "Explicitly paused or parked" },
   { id: "invalid", label: "Check metadata", description: "Correct the publishing block before continuing" }
 ];
 
 export function publishingGroup(task, now = Date.now()) {
   const info = publishingInfo(task, now);
   if (!info) return null;
-  if (["hold", "closed"].includes(info.state)) return "hold";
+  if (["closed", "published"].includes(info.state)) return "completed";
+  if (info.state === "hold") return "hold";
   if (["ready", "overdue"].includes(info.state) && info.declaredState === "ready") return "upload-ready";
   if (info.declaredState === "draft") return "preparing";
   return info.state;

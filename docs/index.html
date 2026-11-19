@@ -73,7 +73,7 @@
           <label class="filter-wrap"><span>View</span><select id="publishing-filter" aria-label="Publishing view">
             <option value="">All work</option><option value="all">Publishing</option><option value="upload-ready">Upload Ready</option>
             <option value="overdue">Overdue</option><option value="verify">Needs verification</option>
-            <option value="scheduled">Scheduled</option><option value="published">Published</option>
+            <option value="scheduled">Scheduled</option><option value="completed">Completed</option><option value="published">Published</option>
             <option value="hold">On hold</option><option value="invalid">Check metadata</option>
           </select></label>
           <label class="filter-wrap"><span>Channel</span><select id="channel-filter" aria-label="Publishing channel"><option value="">All channels</option></select></label>
@@ -115,6 +115,10 @@
       <h3 id="view-description-heading">Description</h3>
       <div id="view-description" class="rendered-markdown"></div>
     </section>
+    <div class="view-related" id="view-post" hidden>
+      <span class="view-label">POST LINK</span>
+      <a id="view-post-link" target="_blank" rel="noopener noreferrer"></a>
+    </div>
     <div class="view-related" id="view-related" hidden>
       <span class="view-label">RELATED GITHUB ISSUE / PR</span>
       <a id="view-related-link" target="_blank" rel="noopener noreferrer"></a>
@@ -124,6 +128,17 @@
       <button type="button" class="btn btn-secondary" data-close="view-dialog">Close</button>
       <button type="button" id="view-edit-btn" class="btn btn-primary" hidden>Edit task</button>
     </div>
+  </dialog>
+
+  <dialog id="post-link-dialog" class="modal" aria-labelledby="post-link-title" aria-describedby="post-link-help">
+    <div class="dialog-heading"><h2 id="post-link-title">Add post link</h2><button type="button" class="close-dialog" data-close="post-link-dialog" aria-label="Cancel adding post link">×</button></div>
+    <p id="post-link-task"></p>
+    <form id="post-link-form">
+      <label class="form-field"><span>Public post URL <em>optional after completion</em></span><input id="post-link-input" type="url" required maxlength="2048" autocomplete="off" spellcheck="false" placeholder="https://…"></label>
+      <p class="privacy-note" id="post-link-help">Use the post/video link, not a profile or dashboard. Tracking parameters are removed. This records your link without checking or changing the post.</p>
+      <p class="form-error" id="post-link-error" role="alert"></p>
+      <div class="dialog-actions"><button type="button" class="btn btn-secondary" data-close="post-link-dialog">Cancel</button><button type="submit" class="btn btn-primary" id="post-link-submit">Save post link</button></div>
+    </form>
   </dialog>
 
   <dialog id="task-dialog" class="modal task-modal" aria-labelledby="task-dialog-title">

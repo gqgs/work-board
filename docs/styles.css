@@ -203,3 +203,7 @@ select option { background: #141d2b; color: var(--text); }
 .card-action:hover:not(:disabled) { background: #254c40; }
 .card-action:disabled { opacity: .5; cursor: wait; }
 @media (max-width: 760px) { .card-action, .card-details { min-height: 44px; } }
+
+.column-indicator.completed { background: var(--green); }
+.publishing-badge.closed { color: #b4f0ce; }
+#post-link-task { overflow-wrap: anywhere; }
