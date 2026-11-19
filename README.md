@@ -48,3 +48,63 @@ python -m http.server 8000
 ```
 
 The tests use synthetic fixtures and fake tokens. They never read or write live tasks. Conflicts must be surfaced rather than silently overwriting concurrent edits.
+
+## Manual publishing and optional tab alerts
+
+Choose **Publishing** (or Ready, Overdue, Needs verification, Scheduled, Published,
+On hold, Check metadata) and a channel. This is a planning view, not a publisher:
+no uploads, provider credentials, external posts or scheduling APIs are involved.
+Dates display in **America/Sao_Paulo**. A past scheduled time means **Needs
+verification**, never an automatic claim that the post is public.
+
+Use one task per clip/channel delivery. Keep the existing six front-matter
+fields. Add exactly one top-level fenced block to its Markdown description:
+
+````markdown
+```work-publish
+{"version":1,"channel":"example","state":"ready","due":"2030-01-03T13:00:00-03:00","published_url":""}
+```
+````
+
+- `version`: number `1`. `channel`: lowercase slug, 1–40 characters.
+- `state`: `draft`, `ready`, `scheduled`, `published`, or `hold`.
+- `due`: optional ISO datetime with seconds and explicit `Z` or `±HH:MM`
+  offset; empty means no date. `scheduled` requires a date. Invalid calendar
+  dates and local datetimes without offsets are rejected.
+- `published_url`: optional credential-free HTTPS receipt. Required for
+  `published`. Only mark scheduled/published after recording the actual result.
+- No other metadata keys. Missing blocks mean ordinary work; malformed,
+  unsupported or duplicate blocks show **Check publishing metadata** and never
+  alert. Code examples nested in other fences are not live metadata.
+- Task status `parked` or publishing state `hold` suppresses alerts. Task status
+  `done` closes an unpublished plan without claiming it was published.
+- A ready/draft item becomes **Overdue** at its due time. Ready is editorial
+  readiness, not authorization to publish. Approval details and exact assets
+  belong in the private description, not in this public UI repository.
+
+This Markdown-body format round-trips through old board clients without a
+front-matter migration. Edit the block in the existing task description form.
+External read-only reminders can use `publishingInfo()` for the same state
+calculation, keyed by the stable task ID and channel.
+
+**Enable tab alerts** explicitly asks for system-notification permission. No
+permission request happens on load or connection. Notifications contain only
+counts, never task titles, links, captions or dates. The first successful
+refresh establishes the ready baseline (no backlog flood); later ready
+transitions alert. Existing overdue and needs-verification items may alert
+once immediately. Alerts are deduplicated by task ID/channel/effective state/
+due time for this connected session, including pause/resume. A changed due time
+can rearm an overdue alert. Disconnect clears this memory and closes outstanding
+notifications. Reconnecting is a new session and may alert for overdue items.
+
+Connected tabs refresh every minute and reuse unchanged blobs in memory. A
+pending edit/save is not interrupted; alerts wait for a successful full
+refresh. No token, task data, opt-in flag or alert history is saved to browser
+storage. Refreshing the page requires reconnecting and enabling alerts again.
+
+Desktop HTTPS browsers with the Notifications API are supported on a best-effort
+basis. Denied/unsupported notifications do not prevent using the board.
+**This tab must remain open and connected.** Background throttling, sleep and OS
+notification settings can delay or hide alerts. No service worker, push server
+or reliable closed-tab reminder is provided; use a separate private reminder
+for that. Never persist the GitHub token to work around this limitation.

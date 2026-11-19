@@ -91,6 +91,91 @@ export function identicalTask(a, b) {
   return [...FIELDS, "description"].every(key => String(a[key] ?? "") === String(b[key] ?? ""));
 }
 
+// Optional publishing metadata lives in the Markdown body, not the strict
+// front matter. Older clients can still read, edit and round-trip these cards.
+export function publishingInfo(task, now = Date.now()) {
+  const source = String(task.description || "");
+  const invalid = { state: "invalid", label: "Check publishing metadata", channel: "", due: "" };
+  let fence = null, body = [], publishing = false, malformed = false, count = 0;
+  const blocks = [];
+  for (const line of source.replace(/\r\n?/g, "\n").split("\n")) {
+    const marker = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+    if (fence) {
+      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length && !marker[2].trim()) {
+        if (publishing) blocks.push(body.join("\n"));
+        fence = null; publishing = false; body = [];
+      } else if (publishing) body.push(line);
+    } else if (marker) {
+      fence = marker[1];
+      if (marker[2].trim().startsWith("work-publish")) {
+        count++;
+        publishing = marker[1][0] === "`" && marker[2].trim() === "work-publish";
+        if (!publishing) malformed = true;
+      }
+    }
+  }
+  if (!count) return null;
+  if (malformed || count !== 1 || blocks.length !== 1) return invalid;
+  try {
+    const data = JSON.parse(blocks[0]);
+    const keys = ["version", "channel", "state", "due", "published_url"];
+    if (!data || Array.isArray(data) || Object.keys(data).some(key => !keys.includes(key)) ||
+        data.version !== 1 || typeof data.channel !== "string" || !/^[a-z][a-z0-9-]{0,39}$/.test(data.channel) ||
+        !["draft", "ready", "scheduled", "published", "hold"].includes(data.state)) return invalid;
+    const due = data.due ?? "";
+    // Require a real calendar date and an explicit offset. Never guess a zone.
+    const date = typeof due === "string" && /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(Z|[+-]\d{2}:\d{2})$/.exec(due);
+    if (due && (!date || !Number.isFinite(Date.parse(due)) ||
+        +date[2] < 1 || +date[2] > 12 || +date[3] < 1 ||
+        +date[3] > new Date(Date.UTC(+date[1], +date[2], 0)).getUTCDate() ||
+        +date[4] > 23 || +date[5] > 59 || +date[6] > 59)) return invalid;
+    if (typeof due !== "string" || (data.published_url != null && typeof data.published_url !== "string")) return invalid;
+    const publishedUrl = safeUrl(data.published_url);
+    if (data.state === "scheduled" && !due) return invalid;
+    if (data.state === "published" && !publishedUrl) return invalid;
+    let state = data.state;
+    if (task.status === "parked" || state === "hold") state = "hold";
+    else if (task.status === "done" && state !== "published") state = "closed";
+    else if (state === "scheduled" && Date.parse(due) <= now) state = "verify";
+    else if (["draft", "ready"].includes(state) && due && Date.parse(due) <= now) state = "overdue";
+    const labels = { draft: "Preparing", ready: "Ready", scheduled: "Scheduled", published: "Published",
+      hold: "On hold", closed: "Closed", overdue: "Overdue", verify: "Needs verification" };
+    return { state, label: labels[state], channel: data.channel, due, publishedUrl, declaredState: data.state };
+  } catch { return invalid; }
+}
+
+export function publishingMatches(task, filter = "", channel = "", now = Date.now()) {
+  const info = publishingInfo(task, now);
+  return Boolean((!channel || info?.channel === channel) &&
+    (!filter || (info && (filter === "all" || info.state === filter))));
+}
+
+export function createPublishingTracker() {
+  return { initialized: false, previous: new Map(), seen: new Set() };
+}
+
+// Session-local only. First snapshot establishes the ready baseline; overdue
+// and unverified scheduled items may alert once immediately. No titles leave
+// the page in notification text. Changed due dates get a new alert identity.
+export function publishingAlerts(tasks, tracker, now = Date.now()) {
+  const events = [], next = new Map();
+  for (const task of tasks) {
+    const info = publishingInfo(task, now);
+    if (!info) continue;
+    next.set(task.id, info.state);
+    const kind = info.state;
+    const readyTransition = kind === "ready" && tracker.initialized && tracker.previous.get(task.id) !== "ready";
+    if (!readyTransition && kind !== "overdue" && kind !== "verify") continue;
+    const key = JSON.stringify([task.id, info.channel, kind, info.due]);
+    if (tracker.seen.has(key)) continue;
+    tracker.seen.add(key);
+    events.push({ id: task.id, kind });
+  }
+  tracker.previous = next;
+  tracker.initialized = true;
+  return events;
+}
+
 // A conservative Markdown subset for the read-only task view. All user-provided
 // markup is escaped first; links must be credential-free HTTPS URLs.
 function escapeMarkdownHtml(value) {

@@ -57,7 +57,7 @@ test("read view renders long Markdown as paragraphs, headings, lists, and code",
   assert.match(html, /<h2>Summary<\/h2>/);
   assert.match(html, /<strong>important<\/strong>/);
   assert.match(html, /<em>emphasized<\/em>/);
-  assert.match(html, /<ul><li>First<\/li><li>Second<\/li><\/ul>/);
+  assert.match(html, /<ul>\s*<li>First<\/li>\s*<li>Second<\/li>\s*<\/ul>/);
   assert.match(html, /<blockquote><p>A quoted observation<\/p><\/blockquote>/);
   assert.match(html, /<pre><code>const n = 3 &lt; 4;<\/code><\/pre>/);
 });

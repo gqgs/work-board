@@ -1,6 +1,7 @@
 import {
   COLUMNS, createTaskId, formatTask, identicalTask, isReviewPr,
-  parseTask, sortTasks, validateTask, renderTaskMarkdown
+  parseTask, sortTasks, validateTask, renderTaskMarkdown,
+  publishingInfo, publishingMatches, createPublishingTracker, publishingAlerts
 } from "./model.mjs";
 
 const REPO = "gqgs/work";
@@ -14,6 +15,13 @@ let loadVersion = 0;
 let loadController;
 let authVersion = 0;
 let connecting = false;
+let pollTimer;
+let lastChecked = 0;
+let notificationsEnabled = false;
+let notificationRequest = false;
+let notificationVersion = 0;
+let publishingTracker = createPublishingTracker();
+const openNotifications = new Set();
 
 function node(name, className, text) {
   const element = H(name);
@@ -117,6 +125,8 @@ async function loadTasks({ token = state.token, authenticate = false } = {}) {
       entry.type === "blob" && /^tasks\/[A-Za-z0-9_-]+\.md$/.test(entry.path)
     );
     const tasks = await mapLimited(files, 6, async entry => {
+      const cached = state.tasks.find(task => task.path === entry.path && task.sha === entry.sha);
+      if (cached && token === state.token) return cached;
       const blob = await github("/git/blobs/" + encodeURIComponent(entry.sha), options);
       if (blob.encoding !== "base64") throw new Error("Unsupported encoding: " + entry.path);
       return { ...parseTask(decodeBase64(blob.content), entry.path), sha: entry.sha };
@@ -125,11 +135,15 @@ async function loadTasks({ token = state.token, authenticate = false } = {}) {
     if (authenticate) state.token = token;
     state.tasks = sortTasks(tasks);
     state.loaded = true;
+    lastChecked = Date.now();
     notice(state.token ? "" : "Read-only mode. Connect GitHub to create or change tasks.");
     render();
+    checkPublishingAlerts();
+    schedulePoll();
     return true;
   } catch (error) {
     if (version !== loadVersion) return false;
+    lastChecked = 0;
     throw error;
   } finally {
     if (version === loadVersion) {
@@ -173,6 +187,11 @@ function renderProjects() {
     option.value = project;
     return option;
   }));
+  const channels = [...new Set(state.tasks.map(task => publishingInfo(task)?.channel).filter(Boolean))].sort();
+  const channelFilter = $("channel-filter");
+  const selectedChannel = channelFilter.value;
+  channelFilter.replaceChildren(new Option("All channels", ""), ...channels.map(channel => new Option(channel, channel)));
+  channelFilter.value = channels.includes(selectedChannel) ? selectedChannel : "";
 }
 
 function createCard(task) {
@@ -187,12 +206,26 @@ function createCard(task) {
   const priority = node("span", "priority " + task.priority, task.priority);
   top.append(project, priority);
   card.append(top, node("h4", "card-title", task.title));
+  const publishing = publishingInfo(task);
+  if (publishing) {
+    card.append(node("p", "publishing-badge " + publishing.state,
+      [publishing.channel, publishing.label].filter(Boolean).join(" · ")));
+    if (publishing.due) card.append(node("p", "publishing-date", formatPublishingDate(publishing.due)));
+    if (publishing.publishedUrl) {
+      const receipt = node("a", "publishing-date", "Publication receipt ↗");
+      receipt.href = publishing.publishedUrl;
+      receipt.target = "_blank";
+      receipt.rel = "noopener noreferrer";
+      receipt.addEventListener("click", event => event.stopPropagation());
+      card.append(receipt);
+    }
+  }
   if (task.description) card.append(node("p", "card-description", task.description));
   const footer = node("div", "card-footer");
   footer.append(node("span", "card-id", task.id.slice(-8)));
   footer.append(node("span", "card-open", "Details →"));
   if (task.url) {
-    const link = node("a", "", "PR ↗");
+    const link = node("a", "", "Link ↗");
     link.href = task.url;
     link.target = "_blank";
     link.rel = "noopener noreferrer";
@@ -270,11 +303,22 @@ function renderBoard() {
   const query = $("search-input").value.trim().toLocaleLowerCase();
   const project = $("project-filter").value;
   const showParked = $("show-parked").checked;
+  const publishingFilter = $("publishing-filter").value;
+  const channel = $("channel-filter").value;
   const filtered = state.tasks.filter(task =>
     (!project || task.project === project) &&
+    publishingMatches(task, publishingFilter, channel) &&
     (!query || [task.title, task.project, task.description, task.id].some(text => text.toLocaleLowerCase().includes(query)))
   );
   const board = $("board");
+  board.classList.toggle("publishing-view", !!publishingFilter);
+  if (publishingFilter) {
+    const ordered = sortTasks(filtered).sort((a, b) =>
+      (Date.parse(publishingInfo(a)?.due) || Infinity) - (Date.parse(publishingInfo(b)?.due) || Infinity));
+    board.replaceChildren(...ordered.map(createCard));
+    if (!ordered.length) board.append(node("p", "empty-column", "No publishing items match. Add a work-publish block in a task description."));
+    return;
+  }
   board.classList.toggle("show-parked", showParked);
   const columns = showParked ? COLUMNS : COLUMNS.filter(column => column.id !== "parked");
   board.replaceChildren(...columns.map(column =>
@@ -287,11 +331,106 @@ function render() {
   renderStats();
   renderProjects();
   renderBoard();
+  renderPublishingControls();
   if ($("view-dialog").open && state.viewing) {
     const current = state.tasks.find(task => task.id === state.viewing);
     if (current) renderTaskView(current);
     else $("view-dialog").close();
   }
+}
+
+function formatPublishingDate(date) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "America/Sao_Paulo", dateStyle: "medium", timeStyle: "short"
+  }).format(new Date(date)) + " · Brasília";
+}
+
+function renderPublishingControls() {
+  const supported = typeof Notification !== "undefined" && globalThis.isSecureContext === true;
+  const button = $("notifications-btn");
+  button.disabled = !supported || !state.token || !state.loaded || state.loading || notificationRequest;
+  button.textContent = !supported ? "System alerts unavailable" : notificationsEnabled ? "Pause tab alerts" : "Enable tab alerts";
+  $("sync-status").textContent = !state.token ? "Connect to check publishing dates."
+    : lastChecked ? "Last checked " + formatPublishingDate(lastChecked) + ". Refreshes every minute while connected."
+    : "Not checked. Alerts wait for a successful refresh.";
+}
+
+function checkPublishingAlerts() {
+  if (!notificationsEnabled || !state.token || !state.loaded || !lastChecked) return;
+  if (typeof Notification === "undefined" || Notification.permission !== "granted") {
+    stopPublishingAlerts();
+    return;
+  }
+  const events = publishingAlerts(state.tasks, publishingTracker);
+  if (!events.length) return;
+  const counts = kind => events.filter(event => event.kind === kind).length;
+  const summary = [["ready", "newly ready"], ["overdue", "overdue"], ["verify", "need verification"]]
+    .filter(([kind]) => counts(kind)).map(([kind, label]) => counts(kind) + " " + label).join("; ");
+  try {
+    const notification = new Notification("Work publishing check", {
+      body: summary + ". Open your private board for details.", tag: "work-publishing", silent: true
+    });
+    openNotifications.add(notification);
+    notification.onclose = () => openNotifications.delete(notification);
+    notification.onclick = () => { globalThis.focus?.(); notification.close(); };
+  } catch {
+    stopPublishingAlerts();
+    showToast("System alerts unavailable here. Publishing filters still work.", true);
+  }
+}
+
+function stopPublishingAlerts({ reset = false } = {}) {
+  notificationVersion++;
+  notificationsEnabled = false;
+  notificationRequest = false;
+  if (reset) publishingTracker = createPublishingTracker();
+  for (const notification of openNotifications) notification.close();
+  openNotifications.clear();
+  renderPublishingControls();
+}
+
+async function togglePublishingAlerts() {
+  if (notificationsEnabled) { stopPublishingAlerts(); return; }
+  if (notificationRequest || !state.token || !state.loaded || state.loading ||
+      typeof Notification === "undefined" || globalThis.isSecureContext !== true) return;
+  const version = ++notificationVersion;
+  notificationRequest = true;
+  renderPublishingControls();
+  try {
+    // Called only by the explicit button click, never on page load or connect.
+    const permission = Notification.permission === "default"
+      ? await Notification.requestPermission() : Notification.permission;
+    if (version !== notificationVersion || !state.token) return;
+    if (permission !== "granted") {
+      showToast("System alerts are not allowed. Use publishing filters or your separate reminder.");
+      return;
+    }
+    notificationsEnabled = true;
+    publishingTracker.initialized = false;
+    publishingTracker.previous.clear();
+    await loadTasks();
+  } catch (error) {
+    if (version === notificationVersion) showToast(describeError(error), true);
+  } finally {
+    if (version === notificationVersion) {
+      notificationRequest = false;
+      renderPublishingControls();
+    }
+  }
+}
+
+function schedulePoll() {
+  clearTimeout(pollTimer);
+  if (state.token) pollTimer = setTimeout(pollTasks, 60000);
+}
+
+async function pollTasks() {
+  if (!state.token) return;
+  try {
+    // Do not interrupt a save, refresh, or the user's unsaved form.
+    if (!state.saving && !state.loading && !$("task-dialog").open) await loadTasks();
+  } catch (error) { notice(describeError(error), true); }
+  finally { schedulePoll(); renderPublishingControls(); }
 }
 
 function showToast(message, error = false) {
@@ -320,6 +459,7 @@ function updateControls() {
     field.disabled = state.saving;
   });
   renderStats();
+  renderPublishingControls();
 }
 
 function taskPath(task) {
@@ -363,6 +503,7 @@ async function saveTask(nextInput, previous = null) {
     }
     state.tasks = sortTasks(state.tasks);
     render();
+    // Alerts wait for the next full refresh, not other potentially stale cards.
     showToast("Committed: " + message);
     return true;
   } finally {
@@ -492,12 +633,19 @@ function disconnect() {
   if (state.saving) return;
   invalidateLoad();
   state.token = "";
+  lastChecked = 0;
+  clearTimeout(pollTimer);
+  stopPublishingAlerts({ reset: true });
   state.tasks = [];
   state.loaded = false;
   state.editing = null;
   state.viewing = null;
   state.dragging = null;
   if ($("view-dialog").open) $("view-dialog").close();
+  if ($("task-dialog").open) $("task-dialog").close();
+  for (const id of ["view-title", "view-project", "view-status", "view-priority", "view-reference", "view-related-link"]) $(id).textContent = "";
+  $("view-description").innerHTML = "";
+  $("view-related-link").removeAttribute?.("href");
   $("task-form").reset();
   render();
   notice("Disconnected. Token discarded from memory.");
@@ -505,6 +653,9 @@ function disconnect() {
 }
 
 function init() {
+  $("notifications-btn").addEventListener("click", togglePublishingAlerts);
+  $("publishing-filter").addEventListener("change", renderBoard);
+  $("channel-filter").addEventListener("change", renderBoard);
   $("auth-form").addEventListener("submit", connect);
   $("task-form").addEventListener("submit", submitTask);
   $("view-edit-btn").addEventListener("click", editViewedTask);

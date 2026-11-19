@@ -24,11 +24,15 @@ function deferred() {
   const promise = new Promise(done => { resolve = done; });
   return { promise, resolve };
 }
-function setup(fetch) {
+function setup(fetch, globals = {}) {
   const elements = new Map();
+  let generated = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
-      id, value: "", textContent: "", disabled: false, open: true,
+      id, value: "", textContent: "", disabled: false, open: true, children: [],
+      append(...children) { this.children.push(...children); },
+      replaceChildren(...children) { this.children = children; },
+      setAttribute(key, value) { this[key] = value; },
       listeners: {}, dataset: {},
       classList: {
         values: new Set(),
@@ -54,8 +58,9 @@ function setup(fetch) {
   const authCancel = element("auth-cancel"); authCancel.dataset.close = "auth-dialog";
   const context = vm.createContext({
     ...model, fetch, AbortController, TextEncoder, TextDecoder, atob, btoa,
-    setTimeout: () => 0, clearTimeout() {},
-    document: { getElementById: element, querySelector: element, querySelectorAll: selector => {
+    setTimeout: () => 0, clearTimeout() {}, ...globals,
+    Option: function(text, value) { return { textContent: text, value }; },
+    document: { createElement: () => element("generated-" + ++generated), getElementById: element, querySelector: element, querySelectorAll: selector => {
       if (selector === "dialog") return [element("auth-dialog"), element("task-dialog")];
       if (selector === "[data-close]") return [authCancel, taskCancel];
       if (selector === '[data-close="task-dialog"]') return [taskCancel];
@@ -68,7 +73,8 @@ function setup(fetch) {
     renderConnection = () => {};
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
       closeDialog, openTask, viewTask, renderTaskView, editViewedTask,
-      disconnect, describeError, renderStats, init };
+      disconnect, describeError, renderStats, init, togglePublishingAlerts, pollTasks,
+      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects };
   `, context);
   return { ...context.app, element };
 }
@@ -406,4 +412,137 @@ test("the detail view keeps long task text and related issue links intact", () =
   assert.equal(app.element("view-related").hidden, false);
   assert.equal(app.element("view-related-link").href, selected.url);
   assert.equal(app.element("view-reference").textContent, selected.id);
+});
+
+function notificationHarness(permission = "default") {
+  const sent = [];
+  let requests = 0;
+  class Notification {
+    static permission = permission;
+    static async requestPermission() { requests++; this.permission = "granted"; return "granted"; }
+    constructor(title, options) { this.title = title; this.options = options; sent.push(this); }
+    close() { this.closed = true; this.onclose?.(); }
+  }
+  return { Notification, sent, requests: () => requests, isSecureContext: true };
+}
+const publication = (state = "ready", due = "") => ({ ...task, description:
+  "```work-publish\n" + JSON.stringify({ version: 1, channel: "example", state, due }) + "\n```" });
+
+test("alerts are opt-in, generic and deduplicated across refresh and pause/resume", async () => {
+  const alerts = notificationHarness();
+  const app = setup(async url => response(url.includes("/trees/") ? tree : blob(publication("ready", "2000-01-01T00:00:00Z"))), alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  assert.equal(alerts.requests(), 0);
+  assert.equal(alerts.sent.length, 0);
+  await app.togglePublishingAlerts();
+  assert.equal(alerts.requests(), 1);
+  assert.equal(alerts.sent.length, 1);
+  assert.match(alerts.sent[0].options.body, /1 overdue/);
+  assert.doesNotMatch(JSON.stringify(alerts.sent), /Example|fake-token|t-example|2000/);
+  await app.loadTasks();
+  await app.togglePublishingAlerts(); // pause
+  await app.togglePublishingAlerts(); // resume without duplicates
+  assert.equal(alerts.sent.length, 1);
+  app.disconnect();
+  assert.equal(alerts.sent[0].closed, true);
+  assert.equal(app.element("notifications-btn").disabled, true);
+});
+
+test("ready transition alerts only after successful refresh, not stale save or failed refresh", async () => {
+  const alerts = notificationHarness("granted");
+  let current = publication("draft"), sha = "one", failed = false;
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") return response({ content: { sha: "local-change" } });
+    if (failed) return response({ message: "Offline" }, 503);
+    return response(url.includes("/trees/") ? { tree: [{ type: "blob", path: task.path, sha }] } : blob(current));
+  }, alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  await app.togglePublishingAlerts();
+  assert.equal(alerts.sent.length, 0);
+  current = publication("ready"); sha = "two";
+  failed = true;
+  await assert.rejects(app.loadTasks(), /Offline/);
+  assert.equal(alerts.sent.length, 0);
+  failed = false;
+  await app.loadTasks();
+  assert.equal(alerts.sent.length, 1);
+  assert.match(alerts.sent[0].options.body, /newly ready/);
+  await app.saveTask({ ...app.state.tasks[0], title: "Unrelated edit" }, app.state.tasks[0]);
+  assert.equal(alerts.sent.length, 1);
+});
+
+test("pending permission cannot enable alerts after disconnect", async () => {
+  const pending = deferred();
+  const alerts = notificationHarness();
+  alerts.Notification.requestPermission = () => pending.promise;
+  const app = setup(async () => response({ tree: [] }), alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  const enabling = app.togglePublishingAlerts();
+  app.disconnect();
+  alerts.Notification.permission = "granted";
+  pending.resolve("granted");
+  await enabling;
+  assert.equal(app.element("notifications-btn").textContent, "Enable tab alerts");
+  assert.equal(app.element("notifications-btn").disabled, true);
+  assert.equal(alerts.sent.length, 0);
+});
+
+test("denied or missing notification API leaves publishing usable without prompts", async () => {
+  const alerts = notificationHarness("denied");
+  const app = setup(async () => response({ tree: [] }), alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  await app.togglePublishingAlerts();
+  assert.equal(alerts.requests(), 0);
+  assert.equal(alerts.sent.length, 0);
+  assert.equal(app.state.loaded, true);
+});
+
+test("polling skips disconnected and editing tabs, caches unchanged private blobs only in memory", async () => {
+  let reads = 0;
+  const app = setup(async url => { reads++; return response(url.includes("/trees/") ? tree : blob(task)); });
+  await app.pollTasks();
+  assert.equal(reads, 0);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  assert.equal(reads, 2);
+  await app.loadTasks();
+  assert.equal(reads, 3); // tree only; blob SHA unchanged
+  app.element("task-dialog").open = true;
+  await app.pollTasks();
+  assert.equal(reads, 3);
+  app.element("task-dialog").open = false;
+  await app.pollTasks();
+  assert.equal(reads, 4);
+  app.disconnect();
+  await app.pollTasks();
+  assert.equal(reads, 4);
+  assert.deepEqual([...app.state.tasks], []);
+});
+
+test("actual publishing card rendering filters channels and exposes safe receipts and date labels", () => {
+  const app = setup(async () => response({ tree: [] }));
+  const receipt = { ...task, id: "t-receipt", description: '```work-publish\n{"version":1,"channel":"second","state":"published","published_url":"https://example.com/post"}\n```' };
+  app.state.token = "fake-token";
+  app.state.tasks = [task, publication("ready", "2099-01-03T13:00:00-03:00"), receipt];
+  app.element("publishing-filter").value = "all";
+  app.renderBoard();
+  assert.equal(app.element("board").children.length, 2);
+  const flatten = element => [element, ...(element.children || []).flatMap(flatten)];
+  const nodes = flatten(app.element("board"));
+  assert.ok(nodes.some(node => node.textContent.includes("Brasília")));
+  assert.ok(nodes.some(node => node.href === "https://example.com/post" && node.rel === "noopener noreferrer"));
+  app.element("channel-filter").value = "second";
+  app.renderBoard();
+  assert.equal(app.element("board").children.length, 1);
+  app.element("publishing-filter").value = "ready";
+  app.renderBoard();
+  assert.match(app.element("board").children[0].textContent, /No publishing items match/);
+  app.state.tasks = [];
+  app.renderProjects();
+  app.renderBoard();
+  assert.equal(app.element("channel-filter").value, "");
 });
