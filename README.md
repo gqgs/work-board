@@ -51,7 +51,7 @@ The tests use synthetic fixtures and fake tokens. They never read or write live 
 
 ## Manual publishing and optional tab alerts
 
-Choose **Publishing** (or Upload Ready, Overdue, Needs verification, Scheduled, Published,
+Choose **Publishing** (or Upload Ready, Overdue, Needs verification, Scheduled, Completed, Published,
 On hold, Check metadata) and a channel. This is a planning view, not a publisher:
 no uploads, provider credentials, external posts or scheduling APIs are involved.
 Dates display in **America/Sao_Paulo**. A past scheduled time means **Needs
@@ -136,12 +136,32 @@ Each actionable card has one next-step button. Publishing drafts get **Mark
 ready**; ready and scheduled cards (including Needs verification) get **Mark
 complete** after you have manually uploaded. Completion changes only task
 `status` to `done`, retaining the original publishing block, dates and links.
-It stops ready/overdue/verification reminders and appears in **Done / On hold**
-with **Done · user-reported**. This is your report of completion,
+It stops ready/overdue/verification reminders and appears in **Completed**
+with **Done** (no post link) or **Published** (post link recorded). This is your report of completion,
 not an upload, schedule, or independent confirmation that a post is public.
-No URL is invented or required. If you have a public permalink, the existing
-Edit task form can record `state: "published"` and `published_url` in the
-publishing block; Published still requires a credential-free HTTPS receipt.
+No URL is invented or required. After completion, an optional **Add post link**
+button opens a short form for X/Twitter, Instagram, YouTube and TikTok cards.
+It saves the existing `state: "published"` and `published_url` together in one
+SHA-protected write while keeping task status `done`, the original due date,
+source `url`, and surrounding description. Existing receipts are never replaced.
+Other channels and legacy receipts stay readable; the generic editor remains
+available. There is no new schema and no second status to manage.
+
+The form accepts recognizable HTTPS post/video permalinks for the card's channel,
+including YouTube watch/Shorts/youtu.be, Instagram post/Reel, X status, and full
+TikTok @user/video links. It rejects profiles, dashboards, credentials, incorrect
+hosts and unresolved redirect/short links. Tracking queries/fragments are removed
+(the YouTube video ID is retained). URL shape is checked locally, not fetched:
+**Published means a post link was recorded, not that public access was verified**.
+Nothing is uploaded, scheduled, posted, or changed on the social platform.
+
+Completed cards share one lane separate from On hold. Card details show the same
+derived publishing status; raw publishing metadata is hidden in read views but
+preserved in the saved Markdown and generic editor. Cancel leaves the task
+unchanged. Polling pauses while entering a link, repeated saves/dismissal are
+blocked during the write, and conflicts or uncertain responses reconcile without
+replay. A failed receipt save requires closing the form and reviewing the current
+card before explicitly retrying; it never silently replaces another receipt.
 
 Ordinary work has **Start**, **Move to review**, or **Mark done** for Backlog,
 Active, and Review respectively. Terminal, parked, held, and malformed

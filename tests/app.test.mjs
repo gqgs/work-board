@@ -29,7 +29,7 @@ function setup(fetch, globals = {}) {
   let generated = 0;
   const element = id => {
     if (!elements.has(id)) elements.set(id, {
-      id, value: "", textContent: "", disabled: false, open: true, children: [],
+      id, value: "", textContent: "", disabled: false, open: id !== "post-link-dialog", children: [],
       append(...children) { this.children.push(...children); },
       replaceChildren(...children) { this.children = children; },
       setAttribute(key, value) { this[key] = value; },
@@ -56,15 +56,17 @@ function setup(fetch, globals = {}) {
   const fields = ["title", "project", "priority", "status", "url", "description"].map(name => element("field-" + name));
   const taskCancel = element("task-cancel"); taskCancel.dataset.close = "task-dialog";
   const authCancel = element("auth-cancel"); authCancel.dataset.close = "auth-dialog";
+  const postCancel = element("post-cancel"); postCancel.dataset.close = "post-link-dialog";
   const context = vm.createContext({
     ...model, fetch, AbortController, TextEncoder, TextDecoder, atob, btoa,
     setTimeout: () => 0, clearTimeout() {}, ...globals,
     Option: function(text, value) { return { textContent: text, value }; },
     document: { createElement: () => element("generated-" + ++generated), getElementById: element, querySelector: element, querySelectorAll: selector => {
       if (selector === ".card-action") return [...elements.values()].filter(element => element.className === "card-action");
-      if (selector === "dialog") return [element("auth-dialog"), element("task-dialog")];
-      if (selector === "[data-close]") return [authCancel, taskCancel];
+      if (selector === "dialog") return [element("auth-dialog"), element("task-dialog"), element("post-link-dialog")];
+      if (selector === "[data-close]") return [authCancel, taskCancel, postCancel];
       if (selector === '[data-close="task-dialog"]') return [taskCancel];
+      if (selector === '[data-close="post-link-dialog"]') return [postCancel];
       if (selector.startsWith("#task-form input")) return fields;
       return [];
     } }
@@ -75,7 +77,7 @@ function setup(fetch, globals = {}) {
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
       closeDialog, openTask, viewTask, renderTaskView, editViewedTask,
       disconnect, describeError, renderStats, init, togglePublishingAlerts, pollTasks,
-      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects, sendTestAlert, createCard, performQuickAction };
+      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects, sendTestAlert, createCard, performQuickAction, openPostLink, submitPostLink, resetPostLink };
   `, context);
   return { ...context.app, element };
 }
@@ -834,4 +836,172 @@ test("draft shortcut saves only readiness metadata, and an engineering shortcut 
   }
   assert.equal(calls.length, 2);
   assert.ok(calls.every(call => call.method === "PUT" && call.url.startsWith("https://api.github.com/repos/gqgs/work/contents/tasks/")));
+});
+
+const completedPublication = (extra = {}) => ({ ...publication("ready"), status: "done",
+  description: 'Prose before.\n\n```work-publish\n{"version":1,"channel":"instagram","state":"ready","due":"2030-01-01T00:00:00Z"}\n```\n\nProse after.', ...extra });
+
+test("Completed groups Done and Published once, with derived details status and optional link button", () => {
+  const app = setup(async () => { throw new Error("Rendering must not write"); });
+  const done = completedPublication(), published = { ...model.addPostLink(done, "https://instagram.com/reel/AbCdEf123_/"), id: "t-published", status: "active" };
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [done, published];
+  app.element("publishing-filter").value = "all";
+  app.renderBoard();
+  const columns = app.element("board").children;
+  const completed = columns.find(node => node.dataset.publishing === "completed");
+  const flatten = element => [element, ...(element.children || []).flatMap(flatten)];
+  assert.equal(flatten(completed).filter(node => node.className === "task-card").length, 2);
+  assert.equal(columns.some(node => node.dataset.publishing === "hold"), false);
+  assert.deepEqual(flatten(completed).filter(node => node.className === "card-action").map(node => node.textContent), ["Add post link"]);
+  assert.ok(flatten(completed).some(node => node.textContent === "instagram · Done"));
+  assert.ok(flatten(completed).some(node => node.textContent === "instagram · Published"));
+  assert.ok(flatten(completed).filter(node => node.className === "card-description").every(node => !node.textContent.includes("work-publish")));
+  app.renderTaskView(published);
+  assert.equal(app.element("view-status").textContent, "Published");
+  assert.equal(app.element("view-post-link").href, model.publishingInfo(published).publishedUrl);
+  assert.doesNotMatch(app.element("view-description").innerHTML, /work-publish|"state"/);
+  app.renderTaskView(done);
+  assert.equal(app.element("view-status").textContent, "Done");
+  assert.equal(app.element("view-post").hidden, true);
+});
+
+test("opening, validating and canceling a post link never writes; reconnect cleanup removes private input", async () => {
+  const calls = [];
+  const app = setup(async (url, options) => { calls.push({ url, ...options }); return response({ tree: [] }); });
+  app.init(); await new Promise(setImmediate);
+  const item = completedPublication();
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  const card = app.createCard(item), button = card.children.find(node => node.className === "card-action");
+  assert.equal(button.fire("click").propagationStopped, true);
+  assert.equal(app.element("post-link-dialog").open, true);
+  app.element("post-link-input").value = "https://instagram.com/example/";
+  await app.submitPostLink(event);
+  assert.match(app.element("post-link-error").textContent, /not a profile/);
+  assert.equal(app.element("post-link-dialog").open, true);
+  for (const dismiss of ["escape", "button", "backdrop"]) {
+    app.openPostLink(item);
+    app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/";
+    if (dismiss === "escape") app.element("post-link-dialog").fire("cancel");
+    if (dismiss === "button") app.element("post-cancel").fire("click");
+    if (dismiss === "backdrop") app.element("post-link-dialog").fire("click");
+    assert.equal(app.element("post-link-dialog").open, false);
+    assert.equal(app.element("post-link-input").value, "");
+    assert.equal(app.state.receipt, null);
+  }
+  app.openPostLink(item); app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/";
+  app.disconnect();
+  assert.equal(app.element("post-link-dialog").open, false);
+  assert.equal(app.element("post-link-input").value, "");
+  assert.equal(app.element("post-link-task").textContent, "");
+  assert.equal(calls.filter(call => call.method === "PUT").length, 0);
+});
+
+test("post link is one SHA-safe write, preserving source and due; in-flight cancel, duplicate save and disconnect are blocked", async () => {
+  const pending = deferred(), calls = [];
+  const app = setup(async (url, options) => {
+    calls.push({ url, ...options });
+    return options.method === "PUT" ? pending.promise : response({ tree: [] });
+  });
+  app.init(); await new Promise(setImmediate);
+  const item = completedPublication({ url: "https://github.com/example/repo/issues/1" });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  app.openPostLink(item);
+  app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/?igsh=tracking";
+  const saving = app.submitPostLink(event);
+  assert.equal(app.element("post-link-input").disabled, true);
+  assert.equal(app.element("post-link-submit").disabled, true);
+  assert.equal(app.element("post-cancel").disabled, true);
+  assert.equal(app.element("post-link-dialog").fire("cancel").defaultPrevented, true);
+  app.element("post-cancel").fire("click"); app.element("post-link-dialog").fire("click"); app.disconnect();
+  assert.equal(app.element("post-link-dialog").open, true);
+  assert.equal(app.state.token, "fake-token");
+  await app.submitPostLink(event);
+  const writes = calls.filter(call => call.method === "PUT");
+  assert.equal(writes.length, 1);
+  assert.equal(writes[0].url, "https://api.github.com/repos/gqgs/work/contents/tasks/t-example.md");
+  const payload = JSON.parse(writes[0].body), next = model.parseTask(Buffer.from(payload.content, "base64").toString());
+  assert.equal(payload.sha, "old-sha");
+  assert.equal(next.status, "done");
+  assert.equal(next.url, item.url);
+  assert.equal(model.displayDescription(next), model.displayDescription(item));
+  assert.equal(model.publishingInfo(next).due, "2030-01-01T00:00:00Z");
+  assert.equal(model.publishingInfo(next).publishedUrl, "https://www.instagram.com/reel/AbCdEf123_/");
+  pending.resolve(response({ content: { sha: "receipt-sha" } })); await saving;
+  assert.equal(app.element("post-link-dialog").open, false);
+  assert.equal(app.element("post-link-input").value, "");
+  assert.equal(app.state.tasks[0].sha, "receipt-sha");
+  assert.equal(model.publishingInfo(app.state.tasks[0]).label, "Published");
+  assert.match(app.element("toast").textContent, /No external publication was changed/);
+});
+
+test("receipt conflict refreshes without replay; close/reopen explicitly retries with current SHA", async () => {
+  const item = completedPublication(), revised = { ...item, title: "Revised elsewhere", sha: "revised-sha" };
+  let writes = 0;
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") {
+      writes++;
+      const payload = JSON.parse(options.body);
+      if (writes === 1) { assert.equal(payload.sha, "old-sha"); return response({ message: "Conflict" }, 409); }
+      assert.equal(payload.sha, "revised-sha"); return response({ content: { sha: "receipt-sha" } });
+    }
+    return response(url.includes("/trees/") ? { tree: [{ type: "blob", path: task.path, sha: "revised-sha" }] } : blob(revised));
+  });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  app.openPostLink(item); app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/";
+  await app.submitPostLink(event);
+  assert.equal(writes, 1);
+  assert.equal(app.state.tasks[0].title, "Revised elsewhere");
+  assert.equal(app.state.receipt, null);
+  assert.equal(app.element("post-link-submit").disabled, true);
+  assert.match(app.element("post-link-error").textContent, /Board refreshed.*review the current card/);
+  await app.submitPostLink(event); assert.equal(writes, 1);
+  app.closeDialog(app.element("post-link-dialog"));
+  app.openPostLink(app.state.tasks[0]); app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/";
+  await app.submitPostLink(event);
+  assert.equal(writes, 2);
+  assert.equal(app.state.tasks[0].title, revised.title);
+});
+
+test("lost receipt response or concurrent existing receipt is reconciled, never overwritten", async () => {
+  for (const mode of ["lost-response", "conflict"]) {
+    const item = completedPublication();
+    const recorded = { ...model.addPostLink(item, "https://instagram.com/p/Existing123_/"), sha: "recorded-sha" };
+    let writes = 0;
+    const app = setup(async (url, options) => {
+      if (options.method === "PUT") { writes++; if (mode === "lost-response") throw new TypeError("Network interrupted"); return response({ message: "Conflict" }, 409); }
+      return response(url.includes("/trees/") ? { tree: [{ type: "blob", path: task.path, sha: "recorded-sha" }] } : blob(recorded));
+    });
+    app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+    app.openPostLink(item); app.element("post-link-input").value = "https://instagram.com/reel/Attempted123_/";
+    await app.submitPostLink(event);
+    assert.equal(writes, 1);
+    assert.equal(model.publishingInfo(app.state.tasks[0]).publishedUrl, "https://www.instagram.com/p/Existing123_/");
+    assert.equal(app.element("post-link-dialog").open, false);
+    assert.match(app.element("toast").textContent, /not overwritten/);
+    app.openPostLink(app.state.tasks[0]);
+    assert.equal(app.element("post-link-dialog").open, false);
+    assert.equal(writes, 1);
+  }
+});
+
+test("receipt form pauses polling and an unverified save blocks retries until refresh", async () => {
+  let online = true, reads = 0, writes = 0;
+  const item = completedPublication();
+  const app = setup(async (url, options) => {
+    if (options.method === "PUT") { writes++; online = false; throw new TypeError("Offline"); }
+    reads++; if (!online) throw new TypeError("Offline");
+    return response(url.includes("/trees/") ? tree : blob(item));
+  });
+  app.state.token = "fake-token"; app.state.loaded = true; app.state.tasks = [item];
+  app.element("task-dialog").open = false;
+  app.openPostLink(item); await app.pollTasks(); assert.equal(reads, 0);
+  app.element("post-link-input").value = "https://instagram.com/reel/AbCdEf123_/";
+  await app.submitPostLink(event);
+  assert.equal(writes, 1);
+  assert.match(app.element("post-link-error").textContent, /refresh successfully.*No automatic retry/);
+  app.closeDialog(app.element("post-link-dialog")); app.openPostLink(item);
+  assert.equal(app.element("post-link-dialog").open, false);
+  online = true; await app.loadTasks(); app.openPostLink(app.state.tasks[0]);
+  assert.equal(app.element("post-link-dialog").open, true);
+  assert.equal(writes, 1);
 });

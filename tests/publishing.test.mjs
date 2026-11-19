@@ -90,8 +90,8 @@ test("Upload Ready includes overdue ready but never draft, scheduled, verificati
     [card({ ...meta, state: "scheduled" }), "scheduled"],
     [card({ ...meta, state: "scheduled", due: past }), "verify"],
     [card({ ...meta, state: "hold" }), "hold"], [card(meta, { status: "parked" }), "hold"],
-    [card(meta, { status: "done" }), "hold"],
-    [card({ ...meta, state: "published", published_url: "https://example.com/post" }), "published"]
+    [card(meta, { status: "done" }), "completed"],
+    [card({ ...meta, state: "published", published_url: "https://example.com/post" }), "completed"]
   ];
   for (const [task, group] of cases) {
     const before = JSON.stringify(task);
@@ -146,7 +146,7 @@ test("complete requires no receipt, changes no metadata and suppresses all publi
     assert.equal(result.description, task.description.trim());
     assert.equal(result.url, "");
     assert.equal(publishingInfo(result, now).state, "closed");
-    assert.equal(publishingInfo(result, now).label, "Done · user-reported");
+    assert.equal(publishingInfo(result, now).label, "Done");
     assert.equal(publishingInfo(result, now).publishedUrl, "");
     assert.deepEqual(publishingAlerts([result], createPublishingTracker(), now), []);
     assert.equal(quickAction(result), null);
@@ -156,6 +156,6 @@ test("complete requires no receipt, changes no metadata and suppresses all publi
   const linked = card({ ...meta, published_url: "https://example.com/post" });
   const complete = applyQuickAction(linked, "complete", now);
   assert.equal(publishingInfo(complete, now).publishedUrl, "https://example.com/post");
-  assert.equal(publishingInfo(complete, now).state, "closed");
+  assert.equal(publishingInfo(complete, now).state, "published");
   assert.equal(publishingInfo(card({ ...meta, state: "published" }), now).state, "invalid");
 });

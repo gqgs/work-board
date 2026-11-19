@@ -2,14 +2,14 @@ import {
   COLUMNS, createTaskId, formatTask, identicalTask, isReviewPr,
   parseTask, sortTasks, validateTask, renderTaskMarkdown,
   publishingInfo, publishingMatches, publishingGroup, PUBLISHING_COLUMNS,
-  createPublishingTracker, publishingAlerts, quickAction, applyQuickAction
+  createPublishingTracker, publishingAlerts, quickAction, applyQuickAction, canAddPostLink, addPostLink, displayDescription
 } from "./model.mjs";
 
 const REPO = "gqgs/work";
 const BRANCH = "main";
 const ROOT = "https://api.github.com/repos/" + REPO;
 const NOTIFICATION_ICON = "./assets/eigendynamics-icon.png";
-const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, dragging: null };
+const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, receipt: null, dragging: null };
 const $ = id => document.getElementById(id);
 const H = name => document.createElement(name);
 let toastTimeout;
@@ -203,7 +203,7 @@ function createCard(task, draggable = true) {
   const card = node("article", "task-card");
   card.draggable = draggable && !!state.token;
   card.dataset.taskId = task.id;
-  card.setAttribute("aria-label", task.title + ", " + task.status);
+  card.setAttribute("aria-label", task.title + ", " + (publishingInfo(task)?.label || task.status));
   const top = node("div", "card-overline");
   const project = node("span", "project-pill", task.project);
   project.title = task.project;
@@ -224,7 +224,8 @@ function createCard(task, draggable = true) {
       card.append(receipt);
     }
   }
-  if (task.description) card.append(node("p", "card-description", task.description));
+  const description = displayDescription(task);
+  if (description) card.append(node("p", "card-description", description));
   const footer = node("div", "card-footer");
   footer.append(node("span", "card-id", task.id.slice(-8)));
   const details = node("button", "card-details", "Details →");
@@ -241,7 +242,7 @@ function createCard(task, draggable = true) {
     footer.append(link);
   }
   card.append(footer);
-  const action = quickAction(task);
+  const action = canAddPostLink(task) ? { id: "post-link", label: "Add post link" } : quickAction(task);
   if (action && state.token) {
     const button = node("button", "card-action", action.label);
     button.type = "button";
@@ -250,7 +251,8 @@ function createCard(task, draggable = true) {
     button.disabled = state.saving || state.loading || !state.loaded || quickActionsBlocked;
     button.addEventListener("click", event => {
       event.stopPropagation();
-      performQuickAction(task, action.id);
+      if (action.id === "post-link") openPostLink(task);
+      else performQuickAction(task, action.id);
     });
     card.append(button);
   }
@@ -299,6 +301,72 @@ async function performQuickAction(previous, action) {
     } catch {
       notice("Could not verify the save result. Refresh successfully before retrying a quick action.", true);
       showToast("Quick actions paused until a successful refresh. No automatic retry was sent.", true);
+    }
+    updateControls();
+  }
+}
+
+function resetPostLink() {
+  state.receipt = null;
+  $("post-link-input").value = "";
+  $("post-link-task").textContent = "";
+  $("post-link-error").textContent = "";
+}
+
+function openPostLink(previous) {
+  if (!state.token || !state.loaded || state.saving || state.loading || quickActionsBlocked) return;
+  const current = state.tasks.find(task => task.id === previous.id);
+  if (!current || current.sha !== previous.sha || !identicalTask(current, previous) || !canAddPostLink(current)) {
+    showToast("Task changed or already has a post link. Review its current state.", true);
+    return;
+  }
+  resetPostLink();
+  state.receipt = current;
+  $("post-link-task").textContent = current.title;
+  $("post-link-dialog").showModal();
+  updateControls();
+  $("post-link-input").focus();
+}
+
+async function submitPostLink(event) {
+  event.preventDefault();
+  if (!state.token || !state.receipt || state.saving || state.loading || quickActionsBlocked) return;
+  const previous = state.receipt;
+  const current = state.tasks.find(task => task.id === previous.id);
+  if (!current || current.sha !== previous.sha || !identicalTask(current, previous)) {
+    state.receipt = null;
+    $("post-link-error").textContent = "Task changed. Close this form and review the current card before trying again.";
+    updateControls();
+    return;
+  }
+  let next;
+  try { next = addPostLink(previous, $("post-link-input").value); }
+  catch (error) { $("post-link-error").textContent = error.message; return; }
+  $("post-link-error").textContent = "";
+  try {
+    await saveTask(next, previous);
+    $("post-link-dialog").close();
+    resetPostLink();
+    showToast("Post link saved. No external publication was changed.");
+    (document.querySelector('[data-task-id="' + previous.id + '"] .card-details') || $("publishing-filter")).focus();
+  } catch (error) {
+    // Never replay a write after a conflict or an ambiguous network response.
+    state.receipt = null;
+    quickActionsBlocked = true;
+    updateControls();
+    try {
+      const loaded = await loadTasks();
+      if (!loaded || !state.token) return;
+      const refreshed = state.tasks.find(task => task.id === previous.id);
+      if (publishingInfo(refreshed || {})?.publishedUrl) {
+        $("post-link-dialog").close();
+        resetPostLink();
+        showToast("Board refreshed. A post link is already recorded; it was not overwritten.");
+      } else {
+        $("post-link-error").textContent = describeError(error) + " Board refreshed. Close this form, review the current card, and try Add post link again.";
+      }
+    } catch {
+      $("post-link-error").textContent = "Could not verify the save result. Close this form and refresh successfully before retrying. No automatic retry was sent.";
     }
     updateControls();
   }
@@ -532,7 +600,7 @@ async function pollTasks() {
   if (!state.token) return;
   try {
     // Do not interrupt a save, refresh, or the user's unsaved form.
-    if (!state.saving && !state.loading && !$("task-dialog").open) await loadTasks();
+    if (!state.saving && !state.loading && !$("task-dialog").open && !$("post-link-dialog").open) await loadTasks();
   } catch (error) { notice(describeError(error), true); }
   finally { schedulePoll(); renderPublishingControls(); }
 }
@@ -552,6 +620,9 @@ function setSaving(value) {
 }
 
 function updateControls() {
+  $("post-link-submit").disabled = state.saving || state.loading || !state.receipt || quickActionsBlocked;
+  $("post-link-input").disabled = state.saving;
+  document.querySelectorAll('[data-close="post-link-dialog"]').forEach(button => { button.disabled = state.saving; });
   document.querySelectorAll(".card-action").forEach(button => {
     button.disabled = !state.token || !state.loaded || state.saving || state.loading || quickActionsBlocked;
   });
@@ -622,15 +693,20 @@ async function saveTask(nextInput, previous = null) {
 function renderTaskView(task) {
   $("view-title").textContent = task.title;
   $("view-project").textContent = task.project;
-  $("view-status").textContent = COLUMNS.find(column => column.id === task.status)?.label || task.status;
+  const publishing = publishingInfo(task);
+  $("view-status").textContent = publishing?.label || COLUMNS.find(column => column.id === task.status)?.label || task.status;
   const priorities = { P0: "P0 · Urgent", P1: "P1 · Next", P2: "P2 · Later" };
   $("view-priority").textContent = priorities[task.priority] || task.priority;
-  $("view-description").innerHTML = task.description
-    ? renderTaskMarkdown(task.description)
+  const description = displayDescription(task);
+  $("view-description").innerHTML = description
+    ? renderTaskMarkdown(description)
     : '<p class="empty-description">No description provided.</p>';
   $("view-related").hidden = !task.url;
   $("view-related-link").href = task.url || "";
   $("view-related-link").textContent = task.url || "";
+  $("view-post").hidden = !publishing?.publishedUrl;
+  $("view-post-link").href = publishing?.publishedUrl || "";
+  $("view-post-link").textContent = publishing?.publishedUrl || "";
   $("view-reference").textContent = task.id;
   $("view-edit-btn").hidden = !state.token;
 }
@@ -729,11 +805,12 @@ function cancelConnection() {
 }
 
 function closeDialog(dialog) {
-  if (dialog.id === "task-dialog" && state.saving) return;
+  if (["task-dialog", "post-link-dialog"].includes(dialog.id) && state.saving) return;
   if (dialog.id === "auth-dialog") cancelConnection();
   const previous = dialog.id === "task-dialog" && state.editing
     ? state.tasks.find(task => task.id === state.editing.id) : null;
   dialog.close();
+  if (dialog.id === "post-link-dialog") resetPostLink();
   if (previous) viewTask(previous);
 }
 
@@ -750,11 +827,15 @@ function disconnect() {
   state.editing = null;
   state.viewing = null;
   state.dragging = null;
+  if ($("post-link-dialog").open) $("post-link-dialog").close();
+  resetPostLink();
   if ($("view-dialog").open) $("view-dialog").close();
   if ($("task-dialog").open) $("task-dialog").close();
-  for (const id of ["view-title", "view-project", "view-status", "view-priority", "view-reference", "view-related-link"]) $(id).textContent = "";
+  for (const id of ["view-title", "view-project", "view-status", "view-priority", "view-reference", "view-related-link", "view-post-link"]) $(id).textContent = "";
   $("view-description").innerHTML = "";
   $("view-related-link").removeAttribute?.("href");
+  $("view-post-link").removeAttribute?.("href");
+  $("view-post").hidden = true;
   $("task-form").reset();
   render();
   notice("Disconnected. Token discarded from memory.");
@@ -762,6 +843,8 @@ function disconnect() {
 }
 
 function init() {
+  $("post-link-form").addEventListener("submit", submitPostLink);
+  $("post-link-dialog").addEventListener("close", resetPostLink);
   $("test-alert-btn").addEventListener("click", sendTestAlert);
   $("notifications-btn").addEventListener("click", togglePublishingAlerts);
   $("publishing-filter").addEventListener("change", renderBoard);
@@ -798,7 +881,7 @@ function init() {
       if (event.target === dialog) closeDialog(dialog);
     });
     dialog.addEventListener("cancel", event => {
-      if (dialog.id === "task-dialog") {
+      if (["task-dialog", "post-link-dialog"].includes(dialog.id)) {
         event.preventDefault();
         if (!state.saving) closeDialog(dialog);
       }
