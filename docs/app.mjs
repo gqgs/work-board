@@ -8,6 +8,7 @@ import {
 const REPO = "gqgs/work";
 const BRANCH = "main";
 const ROOT = "https://api.github.com/repos/" + REPO;
+const NOTIFICATION_ICON = "./assets/eigendynamics-icon.png";
 const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, dragging: null };
 const $ = id => document.getElementById(id);
 const H = name => document.createElement(name);
@@ -367,6 +368,16 @@ function renderPublishingControls() {
     : "Not checked. Alerts wait for a successful refresh.";
 }
 
+function createBoardNotification(title, options) {
+  // Branding is optional: a rejected icon must not prevent the alert itself.
+  // No preflight requests, external assets, or retries after asynchronous errors.
+  try {
+    return new Notification(title, { ...options, icon: NOTIFICATION_ICON });
+  } catch {
+    return new Notification(title, options);
+  }
+}
+
 function sendTestAlert() {
   const result = $("test-alert-result");
   if (!state.token || !state.loaded) { result.textContent = "Connect GitHub first. No test alert was sent."; return; }
@@ -385,7 +396,7 @@ function sendTestAlert() {
       latestTestNotification.close();
       latestTestNotification = null;
     }
-    const notification = new Notification("Work test alert", {
+    const notification = createBoardNotification("Work test alert", {
       body: "This is a test. No tasks were changed.", tag: "work-publishing-test", silent: true
     });
     latestTestNotification = notification;
@@ -413,7 +424,7 @@ function checkPublishingAlerts() {
   const summary = [["ready", "newly ready"], ["overdue", "overdue"], ["verify", "need verification"]]
     .filter(([kind]) => counts(kind)).map(([kind, label]) => counts(kind) + " " + label).join("; ");
   try {
-    const notification = new Notification("Work publishing check", {
+    const notification = createBoardNotification("Work publishing check", {
       body: summary + ". Open your private board for details.", tag: "work-publishing", silent: true
     });
     openNotifications.add(notification);

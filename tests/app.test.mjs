@@ -642,3 +642,54 @@ test("repeated test alerts ignore late failure from the replaced test", async ()
   alerts.sent[1].onerror();
   assert.match(app.element("test-alert-result").textContent, /could not be displayed/);
 });
+
+test("real and test alerts share a local icon without additional requests or task changes", async () => {
+  const alerts = notificationHarness("granted");
+  let reads = 0;
+  const app = setup(async url => {
+    reads++;
+    return response(url.includes("/trees/") ? tree : blob(publication("ready", "2000-01-01T00:00:00Z")));
+  }, alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  const before = JSON.stringify(app.state.tasks), baselineReads = reads;
+  await app.togglePublishingAlerts();
+  app.sendTestAlert();
+  assert.equal(alerts.sent.length, 2);
+  for (const notification of alerts.sent) {
+    assert.equal(notification.options.icon, "./assets/eigendynamics-icon.png");
+    assert.equal(notification.options.silent, true);
+    assert.doesNotMatch(JSON.stringify(notification), /fake-token|t-example|Example|2000/);
+  }
+  assert.equal(reads, baselineReads + 1); // Enable refreshes the tree; the icon/test adds no request.
+  assert.equal(alerts.requests(), 0);
+  assert.equal(JSON.stringify(app.state.tasks), before);
+});
+
+test("an unavailable optional icon falls back once for both alert types", async () => {
+  const alerts = notificationHarness("granted");
+  let attempts = 0;
+  class IconUnavailable extends alerts.Notification {
+    constructor(title, options) {
+      attempts++;
+      if (options.icon) throw new Error("Optional icon unavailable");
+      super(title, options);
+    }
+  }
+  const app = setup(async url => response(url.includes("/trees/") ? tree : blob(publication("ready", "2000-01-01T00:00:00Z"))),
+    { ...alerts, Notification: IconUnavailable });
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  const before = JSON.stringify(app.state.tasks);
+  await app.togglePublishingAlerts();
+  app.sendTestAlert();
+  assert.equal(attempts, 4);
+  assert.equal(alerts.sent.length, 2);
+  assert.deepEqual(alerts.sent.map(alert => alert.title), ["Work publishing check", "Work test alert"]);
+  assert.ok(alerts.sent.every(alert => !Object.hasOwn(alert.options, "icon")));
+  assert.match(app.element("test-alert-result").textContent, /Browser accepted/);
+  await app.loadTasks(); // the optional fallback did not reset real-alert dedup
+  assert.equal(attempts, 4);
+  assert.equal(alerts.requests(), 0);
+  assert.equal(JSON.stringify(app.state.tasks), before);
+});
