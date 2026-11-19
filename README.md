@@ -32,7 +32,7 @@ Without a token, visitors can see the empty interface but cannot load the privat
 
 ## Development
 
-The deployable site is the four files in `docs/`, plus `.nojekyll`. Keep `REPO = "gqgs/work"` and `BRANCH = "main"` in `docs/app.mjs` unless deliberately changing the private data destination.
+The deployable site is `docs/`, including its local `assets/` and `.nojekyll`. Keep `REPO = "gqgs/work"` and `BRANCH = "main"` in `docs/app.mjs` unless deliberately changing the private data destination.
 
 Run the dependency-free tests with Node.js:
 
@@ -124,3 +124,8 @@ without editing tasks, creating due dates, or resetting automatic alert history.
 The inline result distinguishes unavailable/blocked/failed notifications from
 **browser accepted**. Acceptance is not proof that the OS displayed it or that
 you saw it: check the system notification center and Do Not Disturb settings.
+
+The tab favicon and both notification types reuse the public EigenDynamics wiki
+mark through [local assets](docs/assets/README.md), without contacting the wiki.
+The icon is optional; browsers and operating systems may ignore it or show their
+own browser badge alongside it. Notification delivery remains best-effort.
