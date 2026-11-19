@@ -1,7 +1,8 @@
 import {
   COLUMNS, createTaskId, formatTask, identicalTask, isReviewPr,
   parseTask, sortTasks, validateTask, renderTaskMarkdown,
-  publishingInfo, publishingMatches, createPublishingTracker, publishingAlerts
+  publishingInfo, publishingMatches, publishingGroup, PUBLISHING_COLUMNS,
+  createPublishingTracker, publishingAlerts
 } from "./model.mjs";
 
 const REPO = "gqgs/work";
@@ -22,6 +23,7 @@ let notificationRequest = false;
 let notificationVersion = 0;
 let publishingTracker = createPublishingTracker();
 const openNotifications = new Set();
+let latestTestNotification;
 
 function node(name, className, text) {
   const element = H(name);
@@ -194,10 +196,10 @@ function renderProjects() {
   channelFilter.value = channels.includes(selectedChannel) ? selectedChannel : "";
 }
 
-function createCard(task) {
+function createCard(task, draggable = true) {
   const card = node("article", "task-card");
   card.tabIndex = 0;
-  card.draggable = !!state.token;
+  card.draggable = draggable && !!state.token;
   card.setAttribute("role", "button");
   card.setAttribute("aria-label", "Read details for " + task.title + ", " + task.status);
   const top = node("div", "card-overline");
@@ -242,7 +244,7 @@ function createCard(task) {
     }
   });
   card.addEventListener("dragstart", event => {
-    if (!state.token || state.saving) { event.preventDefault(); return; }
+    if (!draggable || !state.token || state.saving) { event.preventDefault(); return; }
     state.dragging = task.id;
     event.dataTransfer.effectAllowed = "move";
     event.dataTransfer.setData("text/plain", task.id);
@@ -256,9 +258,13 @@ function createCard(task) {
   return card;
 }
 
-function createColumn(column, tasks) {
+function createColumn(column, tasks, { publishing = false } = {}) {
   const section = node("section", "kanban-column");
-  section.dataset.status = column.id;
+  if (publishing) {
+    section.classList.add("publishing-column");
+    section.classList.toggle("upload-ready", column.id === "upload-ready");
+    section.dataset.publishing = column.id;
+  } else section.dataset.status = column.id;
   section.setAttribute("aria-label", column.label + " (" + tasks.length + " tasks)");
   const heading = node("div", "column-heading");
   const row = node("div", "column-topline");
@@ -271,12 +277,15 @@ function createColumn(column, tasks) {
   const items = node("div", "column-cards");
   if (tasks.length === 0) {
     const empty = node("div", "empty-column");
-    empty.append(node("strong", "", "＋"), node("span", "", "Drop a task here"));
+    empty.append(node("strong", "", publishing ? "○" : "＋"), node("span", "", publishing ? "No matching items" : "Drop a task here"));
     items.append(empty);
   } else {
-    sortTasks(tasks).forEach(task => items.append(createCard(task)));
+    const ordered = publishing ? sortTasks(tasks).sort((a, b) =>
+      (Date.parse(publishingInfo(a)?.due) || Infinity) - (Date.parse(publishingInfo(b)?.due) || Infinity)) : sortTasks(tasks);
+    ordered.forEach(task => items.append(createCard(task, !publishing)));
   }
   section.append(heading, items);
+  if (publishing) return section; // Derived lanes never write engineering statuses.
   section.addEventListener("dragover", event => {
     if (!state.dragging || state.saving) return;
     event.preventDefault();
@@ -313,10 +322,12 @@ function renderBoard() {
   const board = $("board");
   board.classList.toggle("publishing-view", !!publishingFilter);
   if (publishingFilter) {
-    const ordered = sortTasks(filtered).sort((a, b) =>
-      (Date.parse(publishingInfo(a)?.due) || Infinity) - (Date.parse(publishingInfo(b)?.due) || Infinity));
-    board.replaceChildren(...ordered.map(createCard));
-    if (!ordered.length) board.append(node("p", "empty-column", "No publishing items match. Add a work-publish block in a task description."));
+    const groups = PUBLISHING_COLUMNS.map(column => ({ column,
+      tasks: filtered.filter(task => publishingGroup(task) === column.id) }));
+    const keepReadyLane = ["all", "upload-ready"].includes(publishingFilter);
+    board.replaceChildren(...groups.filter(group => group.tasks.length || (keepReadyLane && group.column.id === "upload-ready"))
+      .map(({ column, tasks }) => createColumn(column, tasks, { publishing: true })));
+    if (!board.children.length) board.append(node("p", "empty-column", "No matching items"));
     return;
   }
   board.classList.toggle("show-parked", showParked);
@@ -350,9 +361,44 @@ function renderPublishingControls() {
   const button = $("notifications-btn");
   button.disabled = !supported || !state.token || !state.loaded || state.loading || notificationRequest;
   button.textContent = !supported ? "System alerts unavailable" : notificationsEnabled ? "Pause tab alerts" : "Enable tab alerts";
+  $("test-alert-btn").disabled = !state.token || !state.loaded || state.loading || notificationRequest;
   $("sync-status").textContent = !state.token ? "Connect to check publishing dates."
     : lastChecked ? "Last checked " + formatPublishingDate(lastChecked) + ". Refreshes every minute while connected."
     : "Not checked. Alerts wait for a successful refresh.";
+}
+
+function sendTestAlert() {
+  const result = $("test-alert-result");
+  if (!state.token || !state.loaded) { result.textContent = "Connect GitHub first. No test alert was sent."; return; }
+  if (typeof Notification === "undefined" || globalThis.isSecureContext !== true) {
+    result.textContent = "System notifications are unavailable in this browser or context. No test alert was sent."; return;
+  }
+  if (Notification.permission === "denied") {
+    result.textContent = "Notifications are blocked for this site. Review the browser's site settings, then enable tab alerts."; return;
+  }
+  if (!notificationsEnabled || Notification.permission !== "granted") {
+    result.textContent = "Choose Enable tab alerts first. This test does not request permission."; return;
+  }
+  try {
+    if (latestTestNotification) {
+      openNotifications.delete(latestTestNotification);
+      latestTestNotification.close();
+      latestTestNotification = null;
+    }
+    const notification = new Notification("Work test alert", {
+      body: "This is a test. No tasks were changed.", tag: "work-publishing-test", silent: true
+    });
+    latestTestNotification = notification;
+    openNotifications.add(notification);
+    notification.onclose = () => openNotifications.delete(notification);
+    notification.onclick = () => { globalThis.focus?.(); notification.close(); };
+    notification.onerror = () => {
+      if (latestTestNotification === notification && openNotifications.has(notification)) result.textContent = "The browser reported that the test alert could not be displayed. Check system notification settings.";
+    };
+    result.textContent = "Browser accepted the test alert. Check your system notification center; this does not confirm it was displayed.";
+  } catch {
+    result.textContent = "The browser could not create the test alert. Check browser and system notification settings. No tasks were changed.";
+  }
 }
 
 function checkPublishingAlerts() {
@@ -384,8 +430,10 @@ function stopPublishingAlerts({ reset = false } = {}) {
   notificationsEnabled = false;
   notificationRequest = false;
   if (reset) publishingTracker = createPublishingTracker();
+  if (reset) $("test-alert-result").textContent = "";
   for (const notification of openNotifications) notification.close();
   openNotifications.clear();
+  latestTestNotification = null;
   renderPublishingControls();
 }
 
@@ -653,6 +701,7 @@ function disconnect() {
 }
 
 function init() {
+  $("test-alert-btn").addEventListener("click", sendTestAlert);
   $("notifications-btn").addEventListener("click", togglePublishingAlerts);
   $("publishing-filter").addEventListener("change", renderBoard);
   $("channel-filter").addEventListener("change", renderBoard);

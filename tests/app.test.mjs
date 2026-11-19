@@ -74,7 +74,7 @@ function setup(fetch, globals = {}) {
     globalThis.app = { state, loadTasks, saveTask, connect, cancelConnection,
       closeDialog, openTask, viewTask, renderTaskView, editViewedTask,
       disconnect, describeError, renderStats, init, togglePublishingAlerts, pollTasks,
-      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects };
+      checkPublishingAlerts, stopPublishingAlerts, renderBoard, renderProjects, sendTestAlert };
   `, context);
   return { ...context.app, element };
 }
@@ -537,12 +537,108 @@ test("actual publishing card rendering filters channels and exposes safe receipt
   assert.ok(nodes.some(node => node.href === "https://example.com/post" && node.rel === "noopener noreferrer"));
   app.element("channel-filter").value = "second";
   app.renderBoard();
-  assert.equal(app.element("board").children.length, 1);
+  assert.equal(flatten(app.element("board")).filter(node => node.className === "task-card").length, 1);
   app.element("publishing-filter").value = "ready";
   app.renderBoard();
-  assert.match(app.element("board").children[0].textContent, /No publishing items match/);
+  assert.ok(flatten(app.element("board")).some(node => node.textContent === "No matching items"));
   app.state.tasks = [];
   app.renderProjects();
   app.renderBoard();
   assert.equal(app.element("channel-filter").value, "");
+});
+
+test("derived publishing lanes place each card once, highlight overdue ready, and preserve engineering lanes", () => {
+  const app = setup(async () => { throw new Error("Rendering must not write"); });
+  const make = (id, state, due) => ({ ...publication(state, due), id });
+  app.state.token = "fake-token";
+  app.state.tasks = [make("t-ready", "ready", "2099-01-01T00:00:00Z"), make("t-late-ready", "ready", "2000-01-01T00:00:00Z"),
+    make("t-late-draft", "draft", "2000-01-01T00:00:00Z"), make("t-verify", "scheduled", "2000-01-01T00:00:00Z")];
+  const before = JSON.stringify(app.state.tasks);
+  app.element("publishing-filter").value = "all";
+  app.renderBoard();
+  const columns = app.element("board").children;
+  assert.equal(columns[0].dataset.publishing, "upload-ready");
+  assert.equal(columns[0].classList.contains("upload-ready"), true);
+  const flatten = element => [element, ...(element.children || []).flatMap(flatten)];
+  const cards = column => flatten(column).filter(node => node.className === "task-card");
+  assert.equal(cards(columns[0]).length, 2);
+  assert.equal(cards(app.element("board")).length, 4);
+  assert.ok(flatten(cards(columns[0])[0]).some(node => node.textContent === "example · Overdue"));
+  assert.ok(cards(app.element("board")).every(node => !node.draggable));
+  assert.ok(columns.every(node => !node.listeners.drop));
+  app.state.tasks[0] = { ...make("t-ready", "scheduled", "2099-01-01T00:00:00Z") };
+  app.renderBoard();
+  assert.equal(cards(app.element("board").children[0]).length, 1);
+  assert.equal(cards(app.element("board")).length, 4);
+  app.state.tasks = JSON.parse(before);
+  app.element("publishing-filter").value = "";
+  app.renderBoard();
+  assert.deepEqual(app.element("board").children.map(node => node.dataset.status), ["backlog", "active", "review", "done"]);
+  assert.equal(JSON.stringify(app.state.tasks), before);
+});
+
+test("Send test alert is explicit, generic and leaves task data and automatic dedup untouched", async () => {
+  const alerts = notificationHarness();
+  const app = setup(async url => response(url.includes("/trees/") ? tree : blob(publication("ready", "2000-01-01T00:00:00Z"))), alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  app.sendTestAlert();
+  assert.equal(alerts.requests(), 0);
+  assert.match(app.element("test-alert-result").textContent, /Enable tab alerts first/);
+  await app.togglePublishingAlerts();
+  assert.equal(alerts.sent.length, 1); // actual overdue baseline
+  const before = JSON.stringify(app.state.tasks);
+  app.sendTestAlert();
+  assert.equal(alerts.sent.length, 2);
+  assert.equal(alerts.sent[1].title, "Work test alert");
+  assert.equal(alerts.sent[1].options.tag, "work-publishing-test");
+  assert.doesNotMatch(JSON.stringify(alerts.sent[1]), /fake-token|t-example|Example|2000/);
+  assert.match(app.element("test-alert-result").textContent, /Browser accepted.*does not confirm it was displayed/);
+  assert.equal(JSON.stringify(app.state.tasks), before);
+  await app.loadTasks();
+  assert.equal(alerts.sent.length, 2); // test did not clear or change overdue dedup
+  alerts.sent[1].onerror();
+  assert.match(app.element("test-alert-result").textContent, /could not be displayed/);
+  app.disconnect();
+  assert.equal(app.element("test-alert-result").textContent, "");
+});
+
+test("Send test alert explains locked, unsupported, denied and constructor failures", async () => {
+  const unsupported = setup(async () => response({ tree: [] }));
+  unsupported.sendTestAlert();
+  assert.match(unsupported.element("test-alert-result").textContent, /Connect GitHub first/);
+  unsupported.state.token = "fake-token"; unsupported.state.loaded = true;
+  unsupported.sendTestAlert();
+  assert.match(unsupported.element("test-alert-result").textContent, /unavailable/);
+  const denied = notificationHarness("denied");
+  const blocked = setup(async () => response({ tree: [] }), denied);
+  blocked.state.token = "fake-token"; blocked.state.loaded = true;
+  blocked.sendTestAlert();
+  assert.equal(denied.requests(), 0);
+  assert.match(blocked.element("test-alert-result").textContent, /blocked for this site/);
+  class BrokenNotification { static permission = "granted"; constructor() { throw new Error("Unsupported"); } }
+  const broken = setup(async () => response({ tree: [] }), { Notification: BrokenNotification, isSecureContext: true });
+  broken.element("token-input").value = "fake-token";
+  await broken.connect(event); await broken.togglePublishingAlerts(); broken.sendTestAlert();
+  assert.match(broken.element("test-alert-result").textContent, /could not create.*No tasks were changed/);
+});
+
+test("publishing mobile layout stacks lanes with Upload Ready first and no horizontal board margin", async () => {
+  const css = await readFile(new URL("../docs/styles.css", import.meta.url), "utf8");
+  assert.match(css, /@media \(max-width: 760px\) \{ \.board\.publishing-view \{ grid-template-columns: minmax\(0,1fr\); margin-right: 0; padding-right: 0;/);
+  assert.match(css, /\.publishing-column\.upload-ready \{[^}]*border: 2px solid/);
+});
+
+test("repeated test alerts ignore late failure from the replaced test", async () => {
+  const alerts = notificationHarness("granted");
+  const app = setup(async () => response({ tree: [] }), alerts);
+  app.element("token-input").value = "fake-token";
+  await app.connect(event); await app.togglePublishingAlerts();
+  app.sendTestAlert(); app.sendTestAlert();
+  assert.equal(alerts.sent.length, 2);
+  assert.equal(alerts.sent[0].closed, true);
+  alerts.sent[0].onerror();
+  assert.match(app.element("test-alert-result").textContent, /Browser accepted/);
+  alerts.sent[1].onerror();
+  assert.match(app.element("test-alert-result").textContent, /could not be displayed/);
 });

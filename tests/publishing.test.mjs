@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { publishingInfo, publishingMatches, createPublishingTracker, publishingAlerts, formatTask, parseTask } from "../docs/model.mjs";
+import { publishingInfo, publishingMatches, publishingGroup, createPublishingTracker, publishingAlerts, formatTask, parseTask } from "../docs/model.mjs";
 
 const now = Date.parse("2030-01-02T16:00:00Z");
 const meta = { version: 1, channel: "example", state: "ready", due: "2030-01-03T13:00:00-03:00" };
@@ -80,4 +80,23 @@ test("initial overdue and needs-verification alert once, never mark published au
   assert.deepEqual(publishingAlerts([task], tracker, now), [{ id: task.id, kind: "verify" }]);
   assert.deepEqual(publishingAlerts([task], tracker, now), []);
   assert.equal(publishingInfo(task, now).declaredState, "scheduled");
+});
+
+test("Upload Ready includes overdue ready but never draft, scheduled, verification, hold or closed", () => {
+  const past = "2030-01-01T00:00:00Z";
+  const cases = [
+    [card(), "upload-ready"], [card({ ...meta, due: past }), "upload-ready"],
+    [card({ ...meta, state: "draft", due: past }), "preparing"],
+    [card({ ...meta, state: "scheduled" }), "scheduled"],
+    [card({ ...meta, state: "scheduled", due: past }), "verify"],
+    [card({ ...meta, state: "hold" }), "hold"], [card(meta, { status: "parked" }), "hold"],
+    [card(meta, { status: "done" }), "hold"],
+    [card({ ...meta, state: "published", published_url: "https://example.com/post" }), "published"]
+  ];
+  for (const [task, group] of cases) {
+    const before = JSON.stringify(task);
+    assert.equal(publishingGroup(task, now), group);
+    assert.equal(publishingMatches(task, "upload-ready", "", now), group === "upload-ready");
+    assert.equal(JSON.stringify(task), before);
+  }
 });
