@@ -30,6 +30,8 @@ A token with write access can change files in the selected private repository. U
 
 Without a token, visitors can see the empty interface but cannot load the private tasks.
 
+Malformed task files no longer block the entire board: valid cards still load, and the board lists each unreadable task filename and validation error until it is corrected. Publishing alerts wait for a clean refresh. GitHub request and authentication errors still fail the connection.
+
 ## Development
 
 The deployable site is `docs/`, including its local `assets/` and `.nojekyll`. Keep `REPO = "gqgs/work"` and `BRANCH = "main"` in `docs/app.mjs` unless deliberately changing the private data destination.

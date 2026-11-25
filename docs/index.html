@@ -84,6 +84,10 @@
         <p id="test-alert-result" class="publishing-help" role="status" aria-live="polite"></p>
         <p class="publishing-help">Alerts are optional and generic. They work only while this tab stays open and connected, may be delayed in the background, and stop on reload. Dates are shown in Brasília time. Ready does not authorize posting.</p>
         <p id="notice" class="notice" role="status">Loading workboard…</p>
+        <section id="task-warnings" class="notice error" role="status" hidden>
+          <strong id="task-warning-summary"></strong>
+          <ul id="task-warning-list"></ul>
+        </section>
         <div id="board" class="board" aria-label="Kanban columns"></div>
       </section>
       <footer class="footer"><span>Source of truth: <code>tasks/*.md</code></span><span>Direct commits · No database · No closed-tab reminders</span></footer>

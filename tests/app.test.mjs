@@ -233,6 +233,55 @@ test("invalid token errors are not mistaken for an unconnected private repo", as
   assert.equal(app.state.token, "");
 });
 
+test("malformed task is identified without locking other cards; repair clears the warning", async () => {
+  const malformed = { ...task, id: "t-malformed", path: "tasks/t-malformed.md", sha: "bad-sha", title: "Synthetic malformed task" };
+  let repaired = false;
+  let requests = [];
+  const app = setup(async url => {
+    requests.push(url);
+    if (url.includes("/trees/")) return response({ tree: [...tree.tree, { type: "blob", path: malformed.path, sha: repaired ? "fixed-sha" : malformed.sha }] });
+    if (url.endsWith("/bad-sha")) return response({ encoding: "base64", content: Buffer.from(model.formatTask(malformed).replace('status: "backlog"', 'status: "blocked"')).toString("base64") });
+    if (url.endsWith("/fixed-sha")) return response(blob({ ...malformed, status: "parked" }));
+    return response(blob(task));
+  });
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  assert.equal(app.state.token, "fake-token");
+  assert.equal(app.state.tasks.length, 1);
+  assert.equal(app.state.tasks[0].id, task.id);
+  assert.equal(app.element("auth-dialog").open, false);
+  assert.equal(app.element("task-warnings").hidden, false);
+  assert.match(app.element("task-warning-summary").textContent, /1 task file could not be loaded/);
+  assert.match(app.element("task-warning-list").children[0].textContent, /tasks\/t-malformed\.md: Invalid status/);
+  assert.match(app.element("task-warning-summary").textContent, /publishing alerts are paused/);
+  assert.equal(app.element("notice").textContent, "");
+  requests = [];
+  repaired = true;
+  await app.loadTasks();
+  assert.equal(app.state.tasks.length, 2);
+  assert.equal(app.state.tasks.find(item => item.id === malformed.id).status, "parked");
+  assert.equal(app.element("task-warnings").hidden, true);
+  assert.equal(app.element("task-warning-list").children.length, 0);
+  assert.equal(requests.filter(url => url.endsWith("/old-sha")).length, 0);
+  repaired = false;
+  await app.loadTasks();
+  assert.equal(app.element("task-warnings").hidden, false);
+  app.disconnect();
+  assert.equal(app.element("task-warnings").hidden, true);
+  assert.equal(app.element("task-warning-list").children.length, 0);
+});
+
+test("a blob HTTP failure is not mistaken for a malformed task or successful authentication", async () => {
+  const app = setup(async url => url.includes("/trees/") ? response(tree) : response({ message: "Forbidden" }, 403));
+  app.element("token-input").value = "fake-token";
+  await app.connect(event);
+  assert.equal(app.state.token, "");
+  assert.equal(app.state.loaded, false);
+  assert.equal(app.state.invalidTasks.length, 0);
+  assert.match(app.element("auth-error").textContent, /GitHub denied access/);
+  assert.match(app.element("notice").textContent, /Connection failed\. GitHub denied access/);
+});
+
 test("a late refresh cannot repopulate the board after disconnect", async () => {
   const pending = deferred();
   const app = setup(async url => url.includes("/trees/") ? pending.promise : response(blob(task)));

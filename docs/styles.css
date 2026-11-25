@@ -91,6 +91,8 @@ select option { background: #141d2b; color: var(--text); }
 .notice { color: var(--muted); font-size: 12px; padding: 11px 14px; margin: 0 0 14px; border-radius: 7px; border: 1px solid var(--line); background: #141e2a; }
 .notice[hidden] { display: none; }
 .notice.error { color: #ffb3b6; border-color: #994a5780; background: #48283228; }
+#task-warning-list { margin: 7px 0 0; padding-left: 20px; overflow-wrap: anywhere; }
+#task-warning-list li + li { margin-top: 4px; }
 .board { display: grid; grid-template-columns: repeat(4, minmax(230px,1fr)); gap: 12px; align-items: start; min-height: 380px; }
 .board.show-parked { grid-template-columns: repeat(5, minmax(225px,1fr)); }
 .kanban-column { display: flex; flex-direction: column; min-height: 380px; border-radius: 10px; padding: 12px 10px 20px; background: #121b27; border: 1px solid #202b39; transition: border-color .15s, background .15s; }

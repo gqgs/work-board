@@ -9,7 +9,7 @@ const REPO = "gqgs/work";
 const BRANCH = "main";
 const ROOT = "https://api.github.com/repos/" + REPO;
 const NOTIFICATION_ICON = "./assets/eigendynamics-icon.png";
-const state = { token: "", tasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, receipt: null, dragging: null };
+const state = { token: "", tasks: [], invalidTasks: [], loaded: false, loading: false, saving: false, editing: null, viewing: null, receipt: null, dragging: null };
 const $ = id => document.getElementById(id);
 const H = name => document.createElement(name);
 let toastTimeout;
@@ -93,6 +93,19 @@ function notice(message, error = false) {
   element.classList.toggle("error", error);
 }
 
+// A malformed task is visible and recoverable, but must never look like a
+// repository-authentication failure or prevent access to other valid cards.
+function renderTaskWarnings() {
+  const issues = state.invalidTasks;
+  $("task-warnings").hidden = !issues.length;
+  $("task-warning-summary").textContent = issues.length
+    ? `${issues.length} task file${issues.length === 1 ? "" : "s"} could not be loaded. Valid cards remain available. Fix the listed files and refresh; publishing alerts are paused until all tasks load.`
+    : "";
+  $("task-warning-list").replaceChildren(...issues.map(issue =>
+    node("li", "", `${issue.path}: ${issue.message}`)
+  ));
+}
+
 function describeError(error, token = state.token) {
   if (!token && (error.status === 404 || error.status === 401)) {
     return "The repository is private. Connect GitHub to load your tasks.";
@@ -128,22 +141,30 @@ async function loadTasks({ token = state.token, authenticate = false } = {}) {
     const files = (tree.tree || []).filter(entry =>
       entry.type === "blob" && /^tasks\/[A-Za-z0-9_-]+\.md$/.test(entry.path)
     );
-    const tasks = await mapLimited(files, 6, async entry => {
+    const records = await mapLimited(files, 6, async entry => {
       const cached = state.tasks.find(task => task.path === entry.path && task.sha === entry.sha);
-      if (cached && token === state.token) return cached;
+      if (cached && token === state.token) return { task: cached };
+      // Actual request/permission failures still fail the load. Only successful
+      // blob reads with invalid task contents are isolated from other cards.
       const blob = await github("/git/blobs/" + encodeURIComponent(entry.sha), options);
-      if (blob.encoding !== "base64") throw new Error("Unsupported encoding: " + entry.path);
-      return { ...parseTask(decodeBase64(blob.content), entry.path), sha: entry.sha };
+      try {
+        if (blob.encoding !== "base64" || typeof blob.content !== "string") throw new Error("Unsupported task encoding.");
+        return { task: { ...parseTask(decodeBase64(blob.content), entry.path), sha: entry.sha } };
+      } catch (error) {
+        return { invalid: { path: entry.path, message: error.message || "Invalid task contents." } };
+      }
     });
     if (version !== loadVersion) return false;
     if (authenticate) state.token = token;
-    state.tasks = sortTasks(tasks);
+    state.tasks = sortTasks(records.flatMap(record => record.task ? [record.task] : []));
+    state.invalidTasks = records.flatMap(record => record.invalid ? [record.invalid] : []);
     state.loaded = true;
     quickActionsBlocked = false;
-    lastChecked = Date.now();
+    lastChecked = state.invalidTasks.length ? 0 : Date.now();
     notice(state.token ? "" : "Read-only mode. Connect GitHub to create or change tasks.");
+    renderTaskWarnings();
     render();
-    checkPublishingAlerts();
+    if (!state.invalidTasks.length) checkPublishingAlerts();
     schedulePoll();
     return true;
   } catch (error) {
@@ -526,6 +547,7 @@ function sendTestAlert() {
 }
 
 function checkPublishingAlerts() {
+  if (state.invalidTasks.length) return;
   if (!notificationsEnabled || !state.token || !state.loaded || !lastChecked) return;
   if (typeof Notification === "undefined" || Notification.permission !== "granted") {
     stopPublishingAlerts();
@@ -784,7 +806,7 @@ async function connect(event) {
   } catch (error) {
     if (version !== authVersion) return;
     $("auth-error").textContent = describeError(error, next);
-    notice("Connection failed. Check repository access.", true);
+    notice("Connection failed. " + describeError(error, next), true);
     renderConnection();
   } finally {
     if (version === authVersion) {
@@ -823,6 +845,8 @@ function disconnect() {
   clearTimeout(pollTimer);
   stopPublishingAlerts({ reset: true });
   state.tasks = [];
+  state.invalidTasks = [];
+  renderTaskWarnings();
   state.loaded = false;
   state.editing = null;
   state.viewing = null;
